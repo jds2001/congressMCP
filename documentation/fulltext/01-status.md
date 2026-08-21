@@ -1,6 +1,16 @@
 *(congressMCP bill-text spec — see `00-INDEX.md` for the file map, conventions, and settled decisions.)*
 
-## Status — 2026-08-14 (current) — PR 1 in defect burndown
+## Status — 2026-08-21 (current) — PR 1 MERGED upstream
+
+**PR 1 landed upstream 2026-08-21** (maintainer-reported). §16 was finalized the day before with all six gates closed; the maintainer added one sentence to the shipped PR description post-final (the OpenAI web-grounding adoption note — accurate per the §17 cross-vendor measurements) — ratified.
+
+**Carried forward, open and non-gating:** F16 confirmation (`#2` suffix → 0 on `119s4726rs`), F31 live keyless check (one scrubbed-env stdio call), #17 (the last requirements call), and Group F's verbatim-sourcing gap — now also a standing invitation in the shipped PR description.
+
+**Next, in the maintainer's priority order (set 2026-08-20):** **PR 2** — persistent cache, §10/§8 (the PR-1 CLI already hardcodes the layout literals PR 2's cache module must own, §10's PR1→PR2 constraint; the `cache` `false`→`null` cosmetic rides along) — then the **F27 §9-envelope convergence** and **D17/D18** (`search_bills`, joint fix constraint) from `../tool-defect-register.md`.
+
+---
+
+## Status — 2026-08-14 *(historical — superseded by the 2026-08-21 block above)* — PR 1 in defect burndown
 
 Branch `feature/bill-text-search-index`; spec tip `d75a548`, implementation tip `950125d`. **The core feature is built and validated; PR 1 is not "done" — it is working down a defect queue from two code-review rounds.** The dated log below (from 2026-08-03 onward) is the decision history and stays as-is; this block is the authoritative *current* picture.
 
