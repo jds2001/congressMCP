@@ -663,6 +663,104 @@ def read_package_meta(conn: sqlite3.Connection) -> dict[str, str]:
     return {str(k): str(v) for k, v in cur.fetchall()}
 
 
+@dataclass(frozen=True)
+class PackageValidation:
+    """Outcome of the §10 adoption validation for one package file.
+
+    ``ok`` means every rule passed and the file may be served. When not ok,
+    ``reason`` names the first failing rule and ``unlink_advised`` says whether
+    §10 permits removing the file: only a *strictly older* schema version or an
+    absent ``build_complete`` (an abandoned build). Anything else -- a newer
+    schema, a foreign application_id, an unreadable file -- is left in place
+    and skipped.
+    """
+
+    ok: bool
+    reason: str | None
+    schema_version: int | None
+    unlink_advised: bool
+    meta: dict[str, str]
+
+
+def validate_package_file(
+    path: Path,
+    *,
+    expected_package_id: str,
+    expected_tables: tuple[str, ...],
+    fts_tables: tuple[str, ...] = (),
+) -> PackageValidation:
+    """The seven adoption rules (§10), in order. "It opens" is not enough.
+
+    1. ``PRAGMA application_id`` equals the project constant.
+    2. ``meta`` holds schema_version, package_id, source_format,
+       source_last_modified and ``build_complete = 1``.
+    3. ``schema_version`` equals current (older -> unlink; newer -> ignore).
+    4. ``meta.package_id`` matches the filename's package id.
+    5. ``PRAGMA quick_check`` is ``ok``.
+    6. Expected tables present.
+    7. ``integrity-check`` passes on each FTS table.
+
+    Used both before publication (close-and-validate of a fresh build) and when
+    adopting a file found on disk. Never raises for a bad file.
+    """
+    path = Path(path)
+
+    def fail(reason: str, *, unlink: bool = False, version: int | None = None, meta: dict | None = None):
+        return PackageValidation(False, reason, version, unlink, meta or {})
+
+    try:
+        # Read-write open: FTS5's integrity-check is issued as an INSERT and a
+        # read-only connection refuses it. It reads only; nothing is modified.
+        conn = sqlite3.connect(str(path), isolation_level="DEFERRED")
+    except sqlite3.Error as exc:
+        return fail(f"cannot open: {exc}")
+    try:
+        try:
+            app_id = conn.execute("PRAGMA application_id").fetchone()[0]
+        except sqlite3.DatabaseError as exc:
+            return fail(f"not a database: {exc}")
+        if app_id != APPLICATION_ID:
+            return fail(f"application_id {app_id:#x} != {APPLICATION_ID:#x}")
+        meta = read_package_meta(conn)
+        missing = [k for k in PACKAGE_META_REQUIRED if k not in meta]
+        if "build_complete" in missing:
+            return fail("build_complete absent (abandoned build)", unlink=True, meta=meta)
+        if missing:
+            return fail(f"meta missing {missing}", meta=meta)
+        if meta.get("build_complete") != "1":
+            return fail(f"build_complete={meta.get('build_complete')!r}", unlink=True, meta=meta)
+        try:
+            version = int(meta["schema_version"])
+        except ValueError:
+            return fail(f"schema_version {meta['schema_version']!r} not an int", meta=meta)
+        if version < SCHEMA_VERSION:
+            return fail(f"schema_version {version} older than {SCHEMA_VERSION}", unlink=True, version=version, meta=meta)
+        if version > SCHEMA_VERSION:
+            return fail(f"schema_version {version} newer than {SCHEMA_VERSION}; ignoring", version=version, meta=meta)
+        if meta["package_id"] != expected_package_id:
+            return fail(f"meta.package_id {meta['package_id']!r} != {expected_package_id!r}", version=version, meta=meta)
+        check = conn.execute("PRAGMA quick_check").fetchone()[0]
+        if check != "ok":
+            return fail(f"quick_check: {check}", version=version, meta=meta)
+        present = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+        }
+        absent = [t for t in expected_tables if t not in present]
+        if absent:
+            return fail(f"tables missing: {absent}", version=version, meta=meta)
+        for table in fts_tables:
+            try:
+                conn.execute(f"INSERT INTO {table}({table}) VALUES('integrity-check')")
+            except sqlite3.DatabaseError as exc:
+                return fail(f"{table} integrity-check failed: {exc}", version=version, meta=meta)
+        return PackageValidation(True, None, version, False, meta)
+    except sqlite3.DatabaseError as exc:
+        return fail(f"database error: {exc}")
+    finally:
+        conn.close()
+
+
 def publish_package(temp_path: Path, final_path: Path) -> tuple[Path, bool]:
     """Atomically move a closed, validated temp build onto its final name.
 

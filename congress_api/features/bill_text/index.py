@@ -1,4 +1,15 @@
-"""In-memory segment-level FTS5 index for parsed bill text."""
+"""Segment-level FTS5 index for parsed bill text.
+
+Builds into any sqlite3 connection: ``:memory:`` (the CONGRESSMCP_CACHE_ENABLED=false
+path, and every test that constructs ``BillTextIndex(parsed)``) or a package file
+being assembled by the persistent cache (spec §10). A published package file is
+reopened with ``BillTextIndex.from_connection``; the ``ParsedBill`` it serves is
+reconstructed from the file, so no raw XML is retained (§10).
+
+Schema ownership: the tables below ARE the on-disk package format. Any change to
+them, to ``FTS_TOKENIZER``, or to how ``display_text`` is rendered must bump
+``cache.SCHEMA_VERSION`` -- there are no migrations, only discard-and-rebuild.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +22,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .models import AncestorNode
-from .parser import ParsedBill, Unit, collapse_ws
+from .parser import ParsedBill, Segment, Unit, collapse_ws
 
 
 CONTEXT_ORDER = {"operative": 0, "quoted": 1, "header": 2}
@@ -21,6 +32,79 @@ CONTEXT_ORDER = {"operative": 0, "quoted": 1, "header": 2}
 # a tokenisation the search never performed -- an instrument that reproduces the
 # failure class of the thing it measures.
 FTS_TOKENIZER = "porter unicode61 remove_diacritics 2"
+
+# Tables a package file must contain to be adopted (spec §10 rule 6), and the FTS
+# table whose integrity-check must pass (rule 7). ``meta`` is owned by cache.py.
+PACKAGE_TABLES: tuple[str, ...] = ("document", "units", "segments", "seg_fts", "seg_vocab")
+FTS_TABLE = "seg_fts"
+
+_SCHEMA_SQL = (
+    """
+    CREATE TABLE document (
+      package_id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      last_modified TEXT,
+      sections_indexed INTEGER NOT NULL,
+      struck_sections_excluded INTEGER NOT NULL,
+      subtree_bytes TEXT NOT NULL,
+      quotes_seen TEXT NOT NULL
+    );
+
+    CREATE TABLE units (
+      id INTEGER PRIMARY KEY,
+      section_id TEXT NOT NULL UNIQUE,
+      ancestor_path TEXT NOT NULL,
+      header TEXT,
+      display_text TEXT NOT NULL,
+      byte_length INTEGER NOT NULL,
+      is_amendatory INTEGER NOT NULL,
+      amends TEXT NOT NULL,
+      child_ids TEXT NOT NULL
+    );
+
+    CREATE TABLE segments (
+      id INTEGER PRIMARY KEY,
+      unit_id INTEGER NOT NULL REFERENCES units(id),
+      ordinal INTEGER NOT NULL,
+      context TEXT NOT NULL CHECK (context IN ('operative','quoted','header')),
+      text TEXT NOT NULL,
+      inline INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE VIRTUAL TABLE seg_fts USING fts5(
+      text,
+      content='segments',
+      content_rowid='id',
+      tokenize='"""
+    + FTS_TOKENIZER
+    + """'
+    );
+
+    -- The bill's term vocabulary, post-stemming, straight off the index that
+    -- answers the search. Lets the zero-hit diagnostic ask "is this term
+    -- anywhere in the document" without a second scan that could disagree.
+    CREATE VIRTUAL TABLE seg_vocab USING fts5vocab(seg_fts, 'row');
+    """
+)
+
+# Scratch tables for tokenizing QUERIES with the identical tokenizer, created in
+# the connection's TEMP schema -- never in the package file. A published package
+# is opened read-only and served concurrently; diagnose() writes to these on
+# every call, so they cannot live in the file (§10: package DBs are closed and
+# self-contained). Running the query through FTS5 itself is the only way to
+# report the tokenisation the search actually used; a Python re-implementation
+# of Porter stemming would be a different tokeniser wearing its name.
+_PROBE_SQL = (
+    """
+    CREATE VIRTUAL TABLE temp.probe_fts USING fts5(
+      text,
+      tokenize='"""
+    + FTS_TOKENIZER
+    + """'
+    );
+    CREATE VIRTUAL TABLE temp.probe_vocab USING fts5vocab('temp', 'probe_fts', 'row');
+    """
+)
 
 
 @dataclass(frozen=True)
@@ -77,68 +161,56 @@ def has_token(q: str) -> bool:
 
 
 class BillTextIndex:
-    def __init__(self, parsed: ParsedBill):
+    def __init__(self, parsed: ParsedBill, conn: sqlite3.Connection | None = None):
+        """Build the index for ``parsed`` into ``conn`` (default: a fresh
+        ``:memory:`` database). With a file connection from
+        ``cache.create_package_db`` this writes the package format."""
         self.parsed = parsed
-        self.conn = sqlite3.connect(":memory:")
+        self.conn = conn if conn is not None else sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         self._build()
+        self.conn.executescript(_PROBE_SQL)
+
+    @classmethod
+    def from_connection(cls, conn: sqlite3.Connection) -> "BillTextIndex":
+        """Serve an already-built package (a published cache file, typically
+        opened read-only). The ParsedBill is reconstructed from the file."""
+        index = cls.__new__(cls)
+        conn.row_factory = sqlite3.Row
+        index.conn = conn
+        index.parsed = load_parsed(conn)
+        conn.executescript(_PROBE_SQL)
+        return index
+
+    def close(self) -> None:
+        self.conn.close()
 
     def _build(self) -> None:
-        self.conn.executescript(
+        self.conn.executescript(_SCHEMA_SQL)
+        parsed = self.parsed
+        self.conn.execute(
             """
-            CREATE TABLE units (
-              id INTEGER PRIMARY KEY,
-              section_id TEXT NOT NULL UNIQUE,
-              ancestor_path TEXT NOT NULL,
-              header TEXT,
-              display_text TEXT NOT NULL,
-              byte_length INTEGER NOT NULL,
-              is_amendatory INTEGER NOT NULL,
-              amends TEXT NOT NULL
-            );
-
-            CREATE TABLE segments (
-              id INTEGER PRIMARY KEY,
-              unit_id INTEGER NOT NULL REFERENCES units(id),
-              ordinal INTEGER NOT NULL,
-              context TEXT NOT NULL CHECK (context IN ('operative','quoted','header')),
-              text TEXT NOT NULL
-            );
-
-            CREATE VIRTUAL TABLE seg_fts USING fts5(
-              text,
-              content='segments',
-              content_rowid='id',
-              tokenize='"""
-            + FTS_TOKENIZER
-            + """'
-            );
-
-            -- The bill's term vocabulary, post-stemming, straight off the index that
-            -- answers the search. Lets the zero-hit diagnostic ask "is this term
-            -- anywhere in the document" without a second scan that could disagree.
-            CREATE VIRTUAL TABLE seg_vocab USING fts5vocab(seg_fts, 'row');
-
-            -- A scratch table for tokenizing QUERIES with the identical tokenizer.
-            -- Running the query through FTS5 itself is the only way to report the
-            -- tokenisation the search actually used; a Python re-implementation of
-            -- Porter stemming would be a different tokeniser wearing its name.
-            CREATE VIRTUAL TABLE probe_fts USING fts5(
-              text,
-              tokenize='"""
-            + FTS_TOKENIZER
-            + """'
-            );
-            CREATE VIRTUAL TABLE probe_vocab USING fts5vocab(probe_fts, 'row');
-            """
+            INSERT INTO document(package_id, version, last_modified, sections_indexed,
+                                 struck_sections_excluded, subtree_bytes, quotes_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                parsed.package_id,
+                parsed.version,
+                parsed.last_modified,
+                parsed.sections_indexed,
+                parsed.struck_sections_excluded,
+                json.dumps(parsed.subtree_bytes),
+                json.dumps(sorted(parsed.quotes_seen)),
+            ),
         )
         segment_id = 1
-        for unit_id, unit in enumerate(self.parsed.units, start=1):
+        for unit_id, unit in enumerate(parsed.units, start=1):
             self.conn.execute(
                 """
                 INSERT INTO units(id, section_id, ancestor_path, header, display_text,
-                                  byte_length, is_amendatory, amends)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                  byte_length, is_amendatory, amends, child_ids)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     unit_id,
@@ -149,12 +221,13 @@ class BillTextIndex:
                     unit.byte_length,
                     1 if unit.is_amendatory else 0,
                     json.dumps(unit.amends),
+                    json.dumps(unit.child_ids),
                 ),
             )
             for ordinal, segment in enumerate(unit.segments):
                 self.conn.execute(
-                    "INSERT INTO segments(id, unit_id, ordinal, context, text) VALUES (?, ?, ?, ?, ?)",
-                    (segment_id, unit_id, ordinal, segment.context, segment.text),
+                    "INSERT INTO segments(id, unit_id, ordinal, context, text, inline) VALUES (?, ?, ?, ?, ?, ?)",
+                    (segment_id, unit_id, ordinal, segment.context, segment.text, 1 if segment.inline else 0),
                 )
                 segment_id += 1
         self.conn.execute("INSERT INTO seg_fts(seg_fts) VALUES('rebuild')")
@@ -304,3 +377,39 @@ def _window(text: str, max_chars: int) -> str:
 
 def ancestor_from_json(data: str) -> list[AncestorNode]:
     return [AncestorNode(**item) for item in json.loads(data)]
+
+
+def load_parsed(conn: sqlite3.Connection) -> ParsedBill:
+    """Rebuild the ParsedBill a package file was built from. Units come back in
+    build order (``units.id``), which is the order ``search`` and the tools rely
+    on; every derived property (display_text, byte_length, is_amendatory, amends)
+    recomputes from the stored segments exactly as it did at build time."""
+    doc = conn.execute("SELECT * FROM document").fetchone()
+    if doc is None:
+        raise sqlite3.DatabaseError("package has no document row")
+    segments_by_unit: dict[int, list[Segment]] = defaultdict(list)
+    for row in conn.execute("SELECT unit_id, context, text, inline FROM segments ORDER BY unit_id, ordinal"):
+        segments_by_unit[int(row["unit_id"])].append(
+            Segment(context=row["context"], text=row["text"], inline=bool(row["inline"]))
+        )
+    units: list[Unit] = []
+    for row in conn.execute("SELECT id, section_id, ancestor_path, header, child_ids FROM units ORDER BY id"):
+        units.append(
+            Unit(
+                section_id=row["section_id"],
+                ancestor_path=ancestor_from_json(row["ancestor_path"]),
+                header=row["header"],
+                segments=segments_by_unit.get(int(row["id"]), []),
+                child_ids=list(json.loads(row["child_ids"])),
+            )
+        )
+    return ParsedBill(
+        package_id=doc["package_id"],
+        version=doc["version"],
+        last_modified=doc["last_modified"],
+        units=units,
+        sections_indexed=int(doc["sections_indexed"]),
+        quotes_seen=set(json.loads(doc["quotes_seen"])),
+        struck_sections_excluded=int(doc["struck_sections_excluded"]),
+        subtree_bytes={k: int(v) for k, v in json.loads(doc["subtree_bytes"]).items()},
+    )
