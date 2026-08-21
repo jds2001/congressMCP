@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from mcp.server.mcpserver import Context
@@ -174,7 +174,10 @@ class ResolvedBillText:
     version_resolved_at: str
     version_resolution_note: str | None
     last_modified: str | None
-    xml_bytes: bytes
+    # None when the caller's skip_download hook declined the XML (a fresh cached
+    # index exists for this package at this lastModified -- spec §10), so only
+    # the GovInfo package summary was fetched.
+    xml_bytes: bytes | None
 
 
 class BillTextError(Exception):
@@ -186,13 +189,25 @@ class BillTextError(Exception):
         self.remediation = remediation
 
 
+SkipDownload = Callable[[str, "str | None"], bool]
+
+
 async def resolve_and_fetch_bill_text(
     ctx: Context,
     congress: int,
     bill_type: str,
     number: int,
     version: str | None,
+    skip_download: SkipDownload | None = None,
 ) -> ResolvedBillText:
+    """Resolve the version, confirm the GovInfo package exists, and fetch its XML.
+
+    ``skip_download(package_id, last_modified)`` -- when it returns True the XML
+    download is skipped and ``xml_bytes`` is None; the package summary (which
+    carries lastModified and proves the package exists, so the fallback-to-next-
+    version behavior is unchanged) is still fetched. This is how the persistent
+    cache serves a warm index without re-downloading the document.
+    """
     bill_type = bill_type.lower()
     versions = await _resolve_versions(ctx, congress, bill_type, number)
     if version:
@@ -205,7 +220,7 @@ async def resolve_and_fetch_bill_text(
                 "Retry with one of the listed versions, or omit version.",
             )
         package_id = package_id_for(congress, bill_type, number, code)
-        fetched = await fetch_govinfo_package(package_id)
+        fetched = await _fetch_package(package_id, skip_download)
         return ResolvedBillText(
             package_id=package_id,
             version=code,
@@ -245,7 +260,7 @@ async def resolve_and_fetch_bill_text(
     for candidate in candidates:
         package_id = package_id_for(congress, bill_type, number, candidate.code)
         try:
-            fetched = await fetch_govinfo_package(package_id)
+            fetched = await _fetch_package(package_id, skip_download)
             parts = [base_note] if base_note else []
             if candidate != candidates[0]:
                 parts.append(
@@ -269,6 +284,14 @@ async def resolve_and_fetch_bill_text(
         {"attempted_versions": errors},
         "Retry later; GovInfo publication can lag Congress.gov metadata.",
     )
+
+
+async def _fetch_package(package_id: str, skip_download: SkipDownload | None) -> tuple[str | None, bytes | None]:
+    # Looked up at call time so tests may replace fetch_govinfo_package; the
+    # keyword is passed only when set, so doubles that predate it still work.
+    if skip_download is None:
+        return await fetch_govinfo_package(package_id)
+    return await fetch_govinfo_package(package_id, skip_download=skip_download)
 
 
 async def _resolve_versions(ctx: Context, congress: int, bill_type: str, number: int) -> list[TextVersion]:
@@ -402,7 +425,12 @@ async def congress_text_versions(ctx: Context, congress: int, bill_type: str, nu
     return versions
 
 
-async def fetch_govinfo_package(package_id: str) -> tuple[str | None, bytes]:
+async def fetch_govinfo_package(
+    package_id: str, *, skip_download: SkipDownload | None = None
+) -> tuple[str | None, bytes | None]:
+    """GovInfo package summary (lastModified) plus the Bill DTD XML bytes. With
+    ``skip_download`` answering True for (package_id, last_modified) the XML leg
+    is skipped and the second element is None."""
     api_key = os.getenv("GOVINFO_API_KEY") or API_KEY or ""
     # follow_redirects is handled manually so the api_key header is only ever
     # sent to api.govinfo.gov and never forwarded across a redirect to a CDN/S3.
@@ -419,6 +447,8 @@ async def fetch_govinfo_package(package_id: str) -> tuple[str | None, bytes]:
         xml_url = _xml_url_from_summary(data)
         if not xml_url:
             raise BillTextError("bill_dtd_unavailable", f"GovInfo package {package_id} did not include a Bill DTD XML link.")
+        if skip_download is not None and skip_download(package_id, last_modified):
+            return last_modified, None
         download = await _govinfo_request(client, "GET", xml_url, api_key, stream=True)
         if download.status_code >= 400:
             await download.aclose()

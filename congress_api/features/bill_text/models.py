@@ -28,12 +28,15 @@ class CacheStatus(BaseModel):
 
 class Timing(BaseModel):
     """Server-measured wall-clock per phase, in milliseconds. fetch_ms covers
-    congress.gov version resolution plus the GovInfo document download; while
-    version_resolution is "fresh" and index_hit is false these run on every call
-    (persistence is PR 2). search_ms is present only for search_bill_text."""
+    congress.gov version resolution plus the GovInfo package summary, and the
+    document download when one happened. On a persisted-index hit
+    (cache.index_hit true) no parse runs and parse_ms is null (§4: null a leg
+    that did not run); index_ms is then the time to open the package file
+    rather than to build the index. search_ms is present only for
+    search_bill_text."""
 
     fetch_ms: float
-    parse_ms: float
+    parse_ms: float | None
     index_ms: float
     search_ms: float | None = None
     total_ms: float
