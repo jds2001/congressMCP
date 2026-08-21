@@ -250,6 +250,17 @@ assert search_bills(congress=119, keywords="Radiation Exposure Compensation") !=
 
 ---
 
+## Upstream reconciliation — audit commissioned 2026-08-21
+
+**Master moved under this register.** Upstream landed defect fixes that overlap these entries: `abb7550` ("Fix P1 defects from the 2026-08-21 functional review", #49–#52), `b04d327` ("Report Congress.gov 404/400 as NOT_FOUND / INVALID_PARAMETERS instead of SERVER_ERROR", #53), and earlier commits touching register territory (#32 null-field crashes, #35 offset paging, #36 truncation, #42/#43 schema-drift guard/CI). The maintainer's read is that at least **D1** (dead `search_members` state filter) is fixed. Register rows are therefore **suspect-stale** until audited; do not plan work from them.
+
+**Audit protocol (implementation session), per this register's own rules:**
+- For each of D1–D18 *and* the refuted section: status on current master — FIXED (name the upstream commit), PARTIAL, or UNCHANGED.
+- **Behavioral evidence per row, not diff-reading alone**: where the entry records a repro, run it (D1's state filter; D2's count-vs-collection coherence; D17/D18's RECA probe set — the differential table is in their entry). A fix claim without its entry's failure mode demonstrated dead is a claim.
+- **Do not re-raise refuted items**; if an upstream commit "fixes" something this register refuted, that is a finding about the commit, not the register.
+- **Report which error shape #53 used.** It invested in the legacy code family (`NOT_FOUND`/`INVALID_PARAMETERS`) — this bears directly on the **F27 convergence ruling** (server-wide §9 envelope, ruled 2026-08-20) and the PR-A constraint that characterization tests must not entrench the legacy shape. If #53 deepened the legacy shape, the convergence ruling stands and its cost just went up; the audit reports, the spec session rules.
+- Deliver as a table, one row per D-entry, evidence cited per row. Register updates happen here after it reports.
+
 ## Closed and refuted — kept so they are not re-raised
 
 **Three of eight findings in the 2026-08-09 review were artifacts of the review's own tooling**, not of the software. The review branch overlays only the in-scope paths onto the branch point, so ~74 out-of-scope files sat at **pre-branch state**; a reviewer reading whole files reported them accurately — about the slice, not about the shipped code.
