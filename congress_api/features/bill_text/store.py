@@ -20,7 +20,7 @@ import logging
 import os
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import cache
@@ -51,6 +51,31 @@ def _stamp(path: Path) -> _Stamp | None:
     return _Stamp(st.st_mtime_ns, st.st_size, st.st_ino)
 
 
+@dataclass
+class ReconcileReport:
+    """What one reconcile pass did (§10 recovery table + startup sweeps)."""
+
+    stale_temps_removed: int = 0
+    stale_schema_removed: int = 0
+    newer_schema_ignored: int = 0
+    unrecognized_ignored: int = 0
+    rows_dropped_missing_file: int = 0
+    files_adopted: int = 0
+    files_invalid_unlinked: int = 0
+    files_invalid_skipped: int = 0
+    bytes_corrected: int = 0
+    errors: list[str] = field(default_factory=list)
+
+    def changed(self) -> bool:
+        return any(
+            getattr(self, name)
+            for name in (
+                "stale_temps_removed", "stale_schema_removed", "rows_dropped_missing_file",
+                "files_adopted", "files_invalid_unlinked", "bytes_corrected",
+            )
+        )
+
+
 class PackageStore:
     """Package files under one cache root.
 
@@ -61,11 +86,20 @@ class PackageStore:
     not on every hit.
     """
 
-    def __init__(self, settings: cache.CacheSettings):
+    def __init__(self, settings: cache.CacheSettings, *, reconcile: bool = True):
         self.settings = settings
         self.layout = settings.layout
         self._validated: dict[Path, tuple[_Stamp, str]] = {}
         self._manifest: cache.Manifest | None = None
+        self.last_reconcile: ReconcileReport | None = None
+        if reconcile:
+            # Startup reconcile (§10): one listdir + one manifest query. Never
+            # fails construction -- a cache that cannot be reconciled is served
+            # as found, and the filesystem is authoritative anyway.
+            try:
+                self.last_reconcile = self.reconcile()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("cache reconcile failed: %s", exc)
 
     # -- manifest (derived; best-effort) ------------------------------------
 
@@ -134,6 +168,19 @@ class PackageStore:
             self._validated.pop(path, None)
         return verdict
 
+    def _drop_row(self, package_id: str) -> None:
+        """Lazy reconcile on a missing-file error (§10 recovery table: "manifest
+        row, file missing -> drop the row, treat as miss")."""
+        self._validated.pop(self.layout.package_path(package_id), None)
+        manifest = self.manifest()
+        if manifest is None:
+            return
+        try:
+            if manifest.remove(package_id):
+                logger.info("manifest row for %s dropped: file missing", package_id)
+        except Exception as exc:
+            logger.warning("manifest remove failed for %s: %s", package_id, exc)
+
     def fresh_path(self, package_id: str, last_modified: str | None) -> Path | None:
         """The published file for ``package_id`` if it validates and was built
         from the same source ``lastModified``. A file built from a different
@@ -142,6 +189,7 @@ class PackageStore:
         """
         path = self.layout.package_path(package_id)
         if not path.exists():
+            self._drop_row(package_id)
             return None
         verdict = self._validate(path, package_id)
         if not verdict.ok:
@@ -170,6 +218,8 @@ class PackageStore:
             # Vanished or broke between validation and open: a miss, never an error.
             logger.warning("could not open package %s: %s", path.name, exc)
             self._validated.pop(path, None)
+            if not path.exists():
+                self._drop_row(package_id)
             return None
         self._record_hit(package_id)
         return index
@@ -224,6 +274,131 @@ class PackageStore:
             # The file at the final name (ours or the winner's) is not servable.
             raise PackageBuildError(f"published package {final.name} is not servable")
         return index, published
+
+    # -- startup reconcile / recovery (§10) ----------------------------------------
+
+    def reconcile(self, *, now: float | None = None) -> ReconcileReport:
+        """Bring manifest and disk back into agreement, disk winning (§10):
+
+        - ``.tmp`` builds older than STALE_TEMP_SECONDS: unlink.
+        - Package files at a *strictly older* schema: unlink (and drop the row);
+          newer schema: ignore in place; unrecognized names: ignore.
+        - Manifest row whose file is missing: drop the row.
+        - File without a row: validate; adopt (row from stat + meta) or skip,
+          unlinking only where validation says §10 allows.
+        - Row whose ``bytes`` disagrees with ``stat``: trust stat, correct the row.
+        - ``manifest.db`` missing or corrupt is handled by Manifest itself
+          (created / unlinked-and-recreated), after which this scan rebuilds it.
+
+        Exactly one directory listing and one manifest query; per-file
+        validation happens only for files that have no row.
+        """
+        now = time.time() if now is None else now
+        report = ReconcileReport()
+        self.layout.ensure_dirs()
+        current: dict[str, Path] = {}
+        try:
+            entries = list(self.layout.packages_dir.iterdir())  # the one listdir
+        except OSError as exc:
+            report.errors.append(f"listdir: {exc}")
+            return report
+        for path in entries:
+            name = path.name
+            if not path.is_file():
+                continue
+            if cache.parse_temp_filename(name) is not None:
+                try:
+                    age = now - path.stat().st_mtime
+                except OSError:
+                    continue
+                if age > cache.STALE_TEMP_SECONDS:
+                    if self._unlink_quiet(path):
+                        report.stale_temps_removed += 1
+                continue
+            parsed = cache.parse_package_filename(name)
+            if parsed is None:
+                report.unrecognized_ignored += 1
+                continue
+            if parsed.is_stale:
+                if self._unlink_quiet(path):
+                    report.stale_schema_removed += 1
+                continue
+            if parsed.is_newer:
+                report.newer_schema_ignored += 1
+                continue
+            current[parsed.package_id] = path
+
+        manifest = self.manifest()
+        if manifest is None:
+            return report
+        try:
+            rows = {row.package_id: row for row in manifest.rows()}  # the one query
+        except Exception as exc:
+            report.errors.append(f"manifest query: {exc}")
+            return report
+
+        for package_id, row in rows.items():
+            path = current.get(package_id)
+            if path is None or path.name != row.filename:
+                try:
+                    manifest.remove(package_id)
+                    report.rows_dropped_missing_file += 1
+                except Exception as exc:
+                    report.errors.append(f"drop {package_id}: {exc}")
+
+        for package_id, path in current.items():
+            stamp = _stamp(path)
+            if stamp is None:
+                continue
+            row = rows.get(package_id)
+            if row is not None and row.filename == path.name:
+                if row.bytes != stamp.size:
+                    try:
+                        manifest.set_bytes(package_id, stamp.size)
+                        report.bytes_corrected += 1
+                    except Exception as exc:
+                        report.errors.append(f"bytes {package_id}: {exc}")
+                continue
+            verdict = self._validate(path, package_id)
+            if not verdict.ok:
+                if verdict.unlink_advised:
+                    self._unlink(path, package_id)
+                    report.files_invalid_unlinked += 1
+                else:
+                    report.files_invalid_skipped += 1
+                logger.info("reconcile: %s not adopted: %s", path.name, verdict.reason)
+                continue
+            try:
+                st = path.stat()
+                manifest.upsert(
+                    cache.ManifestRow(
+                        package_id=package_id,
+                        filename=path.name,
+                        schema_version=cache.SCHEMA_VERSION,
+                        bytes=st.st_size,
+                        created_at=st.st_mtime,
+                        last_accessed_at=st.st_mtime,
+                        source_format=verdict.meta.get("source_format") or SOURCE_FORMAT,
+                        source_last_modified=verdict.meta.get("source_last_modified") or None,
+                    )
+                )
+                report.files_adopted += 1
+            except Exception as exc:
+                report.errors.append(f"adopt {package_id}: {exc}")
+        if report.changed() or report.errors:
+            logger.info("cache reconcile: %s", report)
+        return report
+
+    def _unlink_quiet(self, path: Path) -> bool:
+        self._validated.pop(path, None)
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            logger.warning("could not unlink %s: %s", path.name, exc)
+            return False
 
     # -- helpers ------------------------------------------------------------------
 
