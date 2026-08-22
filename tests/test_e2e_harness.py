@@ -22,6 +22,8 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "tests" / "e2e"))
 
 from run_suite import (  # noqa: E402
+    CACHE_ENV,
+    DEFAULT_CELLS,
     DEFAULT_RUNNERS,
     DISALLOWED_BUILTINS,
     FORBIDDEN_IN_PROMPT,
@@ -32,15 +34,19 @@ from run_suite import (  # noqa: E402
     assert_prompt_is_cold,
     build_command,
     builtins_disabled_record,
+    cache_config,
+    cache_tunables_in_env,
     cell_id_of,
     cell_record,
     codex_config_overrides,
     codex_knob_overrides,
     codex_server_spec,
+    make_cache_dir,
     make_cold_cwd,
     plan_invocations,
     resolve_prompt,
     resolve_runners,
+    warm_cache,
     write_codex_mcp_config,
     write_mcp_config,
     zero_trace_cells,
@@ -163,7 +169,8 @@ def test_written_mcp_config_names_no_credential_in_any_form(tmp_path):
     # "${GOVINFO_API_KEY}" handed the server a truthy literal that OVERRODE the working
     # inherited key -- 401 govinfo_key_rejected on every call, in a shape that reads
     # like a tool defect. The config must name no credential at all.
-    path = write_mcp_config(tmp_path, tmp_path / "trace", bill_text_only=False)
+    path = write_mcp_config(tmp_path, tmp_path / "trace", bill_text_only=False,
+                            cache_dir=tmp_path / "cache")
     text = path.read_text()
     assert "API_KEY" not in text, "the config must not name a credential variable"
     assert "${" not in text, "an unset ${VAR} arrives as a literal and overrides inheritance"
@@ -172,7 +179,8 @@ def test_written_mcp_config_names_no_credential_in_any_form(tmp_path):
         "the server must be launched on stdio via the module entry point; "
         "run_server.py only imports the server object and never serves"
     )
-    assert set(server["env"]) == {"CONGRESSMCP_TRACE_DIR", "CONGRESSMCP_BILL_TEXT_ONLY"}
+    assert set(server["env"]) == {"CONGRESSMCP_TRACE_DIR", "CONGRESSMCP_BILL_TEXT_ONLY",
+                                  "CONGRESSMCP_CACHE_DIR"}
 
 
 def test_config_secret_assertion_halts_on_a_literal_key(tmp_path):
@@ -196,9 +204,9 @@ def test_config_assertion_also_rejects_an_unexpanded_var_reference(tmp_path):
 def test_isolation_cell_config_turns_on_bill_text_only(tmp_path):
     # The isolation cell's three-tool surface must be CONFIGURATION, not an assumption
     # about what the operator has registered.
-    on = json.loads(write_mcp_config(tmp_path, tmp_path / "t", True).read_text())
+    on = json.loads(write_mcp_config(tmp_path, tmp_path / "t", True, tmp_path / "cache").read_text())
     assert on["mcpServers"]["congress"]["env"]["CONGRESSMCP_BILL_TEXT_ONLY"] == "1"
-    off = json.loads(write_mcp_config(tmp_path, tmp_path / "t", False).read_text())
+    off = json.loads(write_mcp_config(tmp_path, tmp_path / "t", False, tmp_path / "cache").read_text())
     assert off["mcpServers"]["congress"]["env"]["CONGRESSMCP_BILL_TEXT_ONLY"] == ""
 
 
@@ -263,7 +271,7 @@ def test_mcp_config_pins_the_preflight_interpreter(tmp_path):
     # passes -- the server then never starts and every prompt completes with zero
     # trace records.
     server = json.loads(
-        write_mcp_config(tmp_path, tmp_path / "t", False).read_text()
+        write_mcp_config(tmp_path, tmp_path / "t", False, tmp_path / "cache").read_text()
     )["mcpServers"]["congress"]
     assert server["command"] == sys.executable
 
@@ -275,7 +283,8 @@ def test_codex_command_shuts_out_the_operator_surface_and_reads_stdin(tmp_path):
     # install that would answer untraced); (2) a read-only sandbox with approvals off is the
     # only-the-traced-tools guarantee, since Codex has no per-tool deny. The prompt is read
     # from stdin (trailing `-`), never argv.
-    spec = codex_server_spec(tmp_path / "trace", bill_text_only=True)
+    spec = codex_server_spec(tmp_path / "trace", bill_text_only=True,
+                             cache_dir=tmp_path / "cache")
     cmd = build_command("codex", ["codex", "exec", "-m", "{model}"], "gpt-5-codex",
                         tmp_path / "mcp.toml", codex_config_overrides(spec),
                         tmp_path / "cold", tmp_path / "last.txt")
@@ -307,7 +316,8 @@ def test_codex_command_shuts_out_the_operator_surface_and_reads_stdin(tmp_path):
 
 
 def test_codex_never_bypasses_the_sandbox_for_any_cell(tmp_path):
-    spec = codex_server_spec(tmp_path / "trace", bill_text_only=False)
+    spec = codex_server_spec(tmp_path / "trace", bill_text_only=False,
+                             cache_dir=tmp_path / "cache")
     cmd = build_command("codex", DEFAULT_RUNNERS["codex"].split(), "gpt-5-codex",
                         tmp_path / "mcp.toml", codex_config_overrides(spec),
                         tmp_path / "cold", tmp_path / "last.txt")
@@ -325,7 +335,8 @@ def test_codex_never_bypasses_the_sandbox_for_any_cell(tmp_path):
 def test_codex_config_and_argv_name_no_credential(tmp_path):
     # Parity with the Claude JSON: neither the config.toml record nor the -c overrides may
     # carry a credential -- the server inherits it. Both audits must fire on a planted key.
-    spec = codex_server_spec(tmp_path / "trace", bill_text_only=False)
+    spec = codex_server_spec(tmp_path / "trace", bill_text_only=False,
+                             cache_dir=tmp_path / "cache")
     toml_path = write_codex_mcp_config(tmp_path, spec)
     text = toml_path.read_text()
     assert "command" in text and "${" not in text
@@ -342,14 +353,17 @@ def test_codex_config_and_argv_name_no_credential(tmp_path):
 def test_codex_server_spec_pins_the_preflight_interpreter(tmp_path):
     # F23 parity: the Codex server, like the Claude one, must launch under sys.executable,
     # the interpreter preflight validated -- not a hardcoded path that can point at nothing.
-    spec = codex_server_spec(tmp_path / "trace", bill_text_only=False)
+    spec = codex_server_spec(tmp_path / "trace", bill_text_only=False,
+                             cache_dir=tmp_path / "cache")
     assert spec["command"] == sys.executable
     assert spec["args"] == ["-m", "congress_api", "--transport", "stdio"]
-    assert set(spec["env"]) == {"CONGRESSMCP_TRACE_DIR", "CONGRESSMCP_BILL_TEXT_ONLY"}
+    assert set(spec["env"]) == {"CONGRESSMCP_TRACE_DIR", "CONGRESSMCP_BILL_TEXT_ONLY",
+                                "CONGRESSMCP_CACHE_DIR"}
     # With a secrets file, the server launches through the spawn shim -- same
     # interpreter, and the ARGV carries only the file's path, never a value.
     secrets = tmp_path / "s17-secrets.env"
-    shimmed = codex_server_spec(tmp_path / "trace", False, secrets_file=secrets)
+    shimmed = codex_server_spec(tmp_path / "trace", False, secrets_file=secrets,
+                                cache_dir=tmp_path / "cache")
     assert shimmed["command"] == sys.executable
     assert shimmed["args"][0].endswith("spawn_server.py")
     assert shimmed["args"][1:] == ["--secrets-file", str(secrets)]
@@ -370,7 +384,8 @@ def test_secrets_reach_artifacts_as_a_path_never_a_value(tmp_path):
     fake = "ZEirgEryNcncMKowiNBW8Uqv6Z6xMh6Tvd6uQyoa"
     secrets = tmp_path / "secrets.env"
     secrets.write_text(f"CONGRESS_API_KEY={fake}\n")
-    spec = codex_server_spec(tmp_path / "trace", True, secrets_file=secrets)
+    spec = codex_server_spec(tmp_path / "trace", True, secrets_file=secrets,
+                             cache_dir=tmp_path / "cache")
     config = write_codex_mcp_config(tmp_path, spec)
     text = config.read_text()
     assert str(secrets) in text          # the path is the record
@@ -576,7 +591,7 @@ def test_codex_server_spec_preapproves_its_tools_in_config_and_overrides(tmp_pat
     # on-disk record and the executed overrides, since they must never drift.
     from run_suite import write_codex_mcp_config
 
-    spec = codex_server_spec(tmp_path / "trace", True)
+    spec = codex_server_spec(tmp_path / "trace", True, cache_dir=tmp_path / "cache")
     assert spec["default_tools_approval_mode"] == "approve"
     flags = codex_config_overrides(spec)
     assert any("default_tools_approval_mode=" in part for part in flags)
@@ -662,6 +677,13 @@ def test_every_scored_prompt_pins_its_criteria_and_its_evidence():
             assert entry.get("sourcing", "").startswith("DERIVED"), (
                 f"{entry['id']}: Group F entries here are derived, not verbatim "
                 "originals, and must say so"
+            )
+        elif entry.get("pass") is None and entry.get("fail") is None:
+            # §17-PR2 VD-a is "scored for attribution, not just correctness" BY
+            # PINNED DESIGN: no pass/fail exists to copy, so the pinned scoring text
+            # travels in `scoring` instead. Still preregistered, still non-empty.
+            assert entry.get("scoring"), (
+                f"{entry['id']} has neither pass/fail nor a pinned scoring rule"
             )
         else:
             assert entry.get("pass"), f"{entry['id']} has no pinned pass criterion"
@@ -840,7 +862,8 @@ def test_builtins_disabled_is_asserted_from_the_claude_argv(tmp_path):
 
 def test_builtins_disabled_is_asserted_from_the_codex_argv(tmp_path):
     cell = MANIFEST["cells"]["cross-vendor-floor"]
-    spec = codex_server_spec(tmp_path / "trace", bill_text_only=True)
+    spec = codex_server_spec(tmp_path / "trace", bill_text_only=True,
+                             cache_dir=tmp_path / "cache")
     overrides = codex_config_overrides(spec) + codex_knob_overrides(cell)
     cmd = build_command("codex", ["codex", "exec", "-m", "{model}"], "m",
                         tmp_path / "mcp.toml", overrides, tmp_path / "cold",
@@ -906,3 +929,171 @@ def test_runner_override_refuses_a_mixed_driver_selection():
     assert both["claude"][0] == "claude" and both["codex"][0] == "codex"
     solo = resolve_runners({"codex"}, "my-codex exec -m {model}")
     assert solo["codex"][0] == "my-codex"
+
+
+# ---# The cache axis (§17-PR2, 2026-08-22): a fresh empty cache dir per invocation, never
+# the platform default or another prompt's; warm cells warmed by direct server-side
+# calls, verified on disk, never through a model turn and never in the trace.
+# --------------------------------------------------------------------------- #
+import os  # noqa: E402
+import subprocess  # noqa: E402
+import types  # noqa: E402
+
+import run_suite  # noqa: E402
+
+DOCS = MANIFEST["documents"]
+HARNESS = REPO / "tests" / "e2e"
+
+
+def test_cache_config_defaults_to_cold_and_validates_warm():
+    assert cache_config({}, DOCS) == {"mode": "cold", "packages": []}
+    assert cache_config({"cache": {"mode": "cold"}}, DOCS) == {"mode": "cold", "packages": []}
+    warm = cache_config({"cache": {"mode": "warm", "packages": ["BILLS-119s1071enr"]}}, DOCS)
+    assert warm == {"mode": "warm", "packages": ["BILLS-119s1071enr"]}
+    with pytest.raises(ValueError, match="not one of"):
+        cache_config({"cache": {"mode": "hot"}}, DOCS)
+    with pytest.raises(ValueError, match="must name the packages"):
+        cache_config({"cache": {"mode": "warm"}}, DOCS)
+    with pytest.raises(ValueError, match="documents table"):
+        cache_config({"cache": {"mode": "warm", "packages": ["BILLS-1hr1enr"]}}, DOCS)
+    with pytest.raises(ValueError, match="cold means empty"):
+        cache_config({"cache": {"mode": "cold", "packages": ["BILLS-119s1071enr"]}}, DOCS)
+
+
+def test_make_cache_dir_is_fresh_empty_outside_the_repo_and_never_the_inherited_one(
+        tmp_path, monkeypatch):
+    # The persistent cache the server would use on its own (here: an operator's
+    # CONGRESSMCP_CACHE_DIR, populated) must never be the cell's.
+    persistent = tmp_path / "persistent"
+    (persistent / "packages").mkdir(parents=True)
+    (persistent / "packages" / "BILLS-119s1071enr.v1.db").write_bytes(b"x")
+    monkeypatch.setenv(CACHE_ENV, str(persistent))
+    a = make_cache_dir("A4")
+    b = make_cache_dir("A4")
+    for d in (a, b):
+        assert d.exists() and not any(d.iterdir())
+        assert d.resolve() != persistent.resolve()
+        assert REPO.resolve() not in d.resolve().parents
+    assert a != b, "two invocations never share a cache dir"
+
+
+def test_mcp_configs_carry_the_cell_cache_dir_for_both_drivers(tmp_path):
+    cache_dir = tmp_path / "cell-cache"
+    claude = json.loads(write_mcp_config(tmp_path, tmp_path / "t", True, cache_dir).read_text())
+    assert claude["mcpServers"]["congress"]["env"][CACHE_ENV] == str(cache_dir)
+    codex = codex_server_spec(tmp_path / "t", True, cache_dir=cache_dir)
+    assert codex["env"][CACHE_ENV] == str(cache_dir)
+    toml = write_codex_mcp_config(tmp_path, codex).read_text()
+    assert f'{CACHE_ENV} = "{cache_dir}"' in toml
+    assert any(f"mcp_servers.congress.env.{CACHE_ENV}=" in f for f in codex_config_overrides(codex))
+
+
+def test_cache_tunables_in_env_discloses_only_what_is_set(monkeypatch):
+    for name in run_suite.CACHE_TUNABLE_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    assert cache_tunables_in_env() == {}
+    monkeypatch.setenv("CONGRESSMCP_VERSION_TTL", "5")
+    assert cache_tunables_in_env() == {"CONGRESSMCP_VERSION_TTL": "5"}
+
+
+def _fake_warm_run(records, returncode=0, stderr=""):
+    """A subprocess.run stand-in for warm_cache.py that also asserts the env contract."""
+    def fake(cmd, **kw):
+        assert cmd[1].endswith("warm_cache.py")
+        env = kw["env"]
+        assert CACHE_ENV in env and "CONGRESSMCP_TRACE_DIR" not in env, (
+            "the warm process carries the cell cache dir and NO trace dir"
+        )
+        specs = json.loads(kw["input"])
+        assert specs[0]["congress"] == 119 and specs[0]["version"] == "enr"
+        return types.SimpleNamespace(returncode=returncode, stdout=json.dumps(records),
+                                     stderr=stderr)
+    return fake
+
+
+def _warm_record(pid, present=True):
+    return {"package_id": pid, "present": present, "calls": [{"version_arg": None,
+            "package_id": pid, "version_resolution": "fresh"}]}
+
+
+def test_warm_cache_verifies_the_package_on_disk_and_the_empty_trace(tmp_path, monkeypatch):
+    from congress_api.features.bill_text import cache as cache_mod
+
+    cache_dir, trace_dir = tmp_path / "cache", tmp_path / "trace"
+    trace_dir.mkdir()
+    pid = "BILLS-119s1071enr"
+    monkeypatch.setattr(run_suite.subprocess, "run", _fake_warm_run([_warm_record(pid)]))
+    # Warm script says warm but nothing is on disk: refuse. The assertion is the file,
+    # not the script's word.
+    with pytest.raises(SystemExit, match="NOT warm"):
+        warm_cache(cache_dir, [pid], DOCS, trace_dir)
+    path = cache_mod.CacheLayout(cache_dir).package_path(pid)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"db")
+    assert warm_cache(cache_dir, [pid], DOCS, trace_dir)[0]["package_id"] == pid
+    # A warm call that leaked into the cell's trace voids the measurement.
+    (trace_dir / "bill_text_trace.jsonl").write_text("{}\n")
+    with pytest.raises(SystemExit, match="trace dir .* is not empty"):
+        warm_cache(cache_dir, [pid], DOCS, trace_dir)
+    (trace_dir / "bill_text_trace.jsonl").unlink()
+    # A failing warm script halts the run rather than recording a cold timing.
+    monkeypatch.setattr(run_suite.subprocess, "run",
+                        _fake_warm_run([], returncode=2, stderr="warm_cache: boom"))
+    with pytest.raises(SystemExit, match="exited 2"):
+        warm_cache(cache_dir, [pid], DOCS, trace_dir)
+
+
+def test_warm_script_refuses_a_traced_or_unscoped_environment(tmp_path):
+    script = HARNESS / "warm_cache.py"
+    base = {k: v for k, v in os.environ.items()
+            if k not in ("CONGRESSMCP_TRACE_DIR", CACHE_ENV)}
+    specs = json.dumps([{"package_id": "BILLS-119s1071enr", "congress": 119,
+                         "bill_type": "s", "number": 1071, "version": "enr"}])
+    traced = subprocess.run([sys.executable, str(script)], input=specs, text=True,
+                            capture_output=True,
+                            env={**base, CACHE_ENV: str(tmp_path), "CONGRESSMCP_TRACE_DIR": str(tmp_path)})
+    assert traced.returncode == 2 and "must not appear in the cell's trace" in traced.stderr
+    unscoped = subprocess.run([sys.executable, str(script)], input=specs, text=True,
+                              capture_output=True, env=base)
+    assert unscoped.returncode == 2 and "platform-default" in unscoped.stderr
+    empty = subprocess.run([sys.executable, str(script)], input="[]", text=True,
+                           capture_output=True, env={**base, CACHE_ENV: str(tmp_path)})
+    assert empty.returncode == 2 and "non-empty" in empty.stderr
+
+
+def test_warm_packages_pins_the_named_version_when_current_differs(tmp_path):
+    # version=None first (consumer-shaped: warms the resolution row), then an explicit
+    # pin when what resolved is not the named package, so the NAMED file is on disk.
+    import asyncio
+
+    from congress_api.features.bill_text import cache as cache_mod
+    from warm_cache import warm_packages
+
+    cache_dir = tmp_path / "cache"
+    named = "BILLS-119hr3838rh"
+    calls = []
+
+    async def toc(ctx, **kw):
+        calls.append(kw)
+        pid = "BILLS-119hr3838eh" if kw.get("version") is None else "BILLS-119hr3838rh"
+        path = cache_mod.CacheLayout(cache_dir).package_path(pid)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"db")
+        return {"package_id": pid, "version": pid[-2:], "version_resolution": "fresh",
+                "cache": {"index_hit": False, "version_hit": False},
+                "timing": {"total_ms": 1.0}}
+
+    spec = {"package_id": named, **{k: DOCS[named][k]
+                                    for k in ("congress", "bill_type", "number", "version")}}
+    [rec] = asyncio.run(warm_packages([spec], cache_dir, toc=toc))
+    assert [c.get("version") for c in calls] == [None, "rh"]
+    assert all(c["depth"] == 1 for c in calls)
+    assert rec["present"] and rec["bytes"] == 2
+    assert [c["version_arg"] for c in rec["calls"]] == [None, "rh"]
+    assert [c["package_id"] for c in rec["calls"]] == ["BILLS-119hr3838eh", named]
+
+    async def erroring(ctx, **kw):
+        return {"error": {"code": "bill_not_found", "message": "no"}}
+
+    [rec] = asyncio.run(warm_packages([spec], tmp_path / "c2", toc=erroring))
+    assert rec["present"] is False and rec["calls"][0]["error"] == "bill_not_found"
