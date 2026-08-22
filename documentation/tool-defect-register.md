@@ -249,7 +249,7 @@ assert "HR 4631" in search_bills(congress=119, keywords="St. Louis RECA Readjust
 assert search_bills(congress=119, keywords="Radiation Exposure Compensation") != ""
 ```
 
-**Status: both OPEN. Sequencing: after PR 2**, alongside the F27 error-shape convergence — set by the maintainer 2026-08-20. Not for immediate implementation. **Audited 2026-08-21: both UNCHANGED on master** — the differential table reproduced byte-for-byte (spec-session-verified from the raw evidence JSON), `HR 4631` confirmed to exist upstream and confirmed unreachable by its own exact title, `processors.py` matcher and `api.py` window both untouched by the upstream fix round. The joint constraint stands.
+**Status: both OPEN. Sequencing: after PR 2**, alongside the F27 error-shape convergence — set by the maintainer 2026-08-20. Not for immediate implementation. **Audited 2026-08-21: both UNCHANGED on master** — the differential table reproduced byte-for-byte (spec-session-verified from the raw evidence JSON), `HR 4631` confirmed to exist upstream and confirmed unreachable by its own exact title, `processors.py` matcher and `api.py` window both untouched by the upstream fix round. The joint constraint stands. **Real-use corroboration 2026-08-22:** a genuine research session hunting a just-introduced bill (`119hr10115ih`) could not reach it through `search_bills` or `search_summaries` and got there only via web search + `get_member_sponsored_legislation` — the discovery gap costing an actual session, not a probe. Priority argument strengthened.
 
 ### D19 — `client_handler.py` calls the async, deprecated `ctx.error` un-awaited at four sites `[AUDIT, 2026-08-21 — reopened from bug_008's failed refutation]`
 
