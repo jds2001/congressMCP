@@ -261,10 +261,13 @@ async def test_not_found_is_not_offline(govinfo, monkeypatch):
 async def test_explicit_version_cached_is_served_offline_with_no_network(govinfo):
     first = await load(version="enr")
     assert first.index_hit is False and govinfo.resolves == 1
+    # "pinned" on EVERY explicit-version call (§10 ruling): the caller named
+    # the version, so neither a fresh nor a cached resolution occurred.
+    assert (first.version_resolution, first.version_hit) == ("pinned", False)
     govinfo.offline = True
     second = await load(version="enr")
     assert second.index_hit is True
-    assert (second.version_resolution, second.version_hit) == ("fresh", False), "no resolution happened"
+    assert (second.version_resolution, second.version_hit) == ("pinned", False), "no resolution happened"
     assert second.timing == {"resolve_ms": None, "download_ms": None, "parse_ms": None, "index_ms": None}
     assert second.resolved.last_modified == LM
     assert govinfo.resolves == 1, "explicit cached version: no network at all"
@@ -351,3 +354,7 @@ async def test_timing_split_and_cache_block_on_the_wire(govinfo):
     assert warm["timing"]["total_ms"] >= 0
     json.dumps(warm)
     Timing(**warm["timing"])
+    pinned = await tools_mod.get_bill_toc(None, congress=119, bill_type="s", number=1071, depth=1, version="enr")
+    assert pinned["version_resolution"] == "pinned"
+    assert pinned["cache"] == {"index_hit": True, "version_hit": False}
+    assert pinned["version_resolution_note"] is None

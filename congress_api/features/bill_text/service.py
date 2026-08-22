@@ -3,6 +3,7 @@ persistent cache or fetch-parse-build-publish.
 
 | Situation | Behavior |
 |---|---|
+| Explicit ``version=`` (any) | ``version_resolution: "pinned"`` -- the caller named the version, no resolution ran; ``cache.version_hit`` false. |
 | Explicit ``version=``, index cached | Serve from cache with no network. Revalidate only if ``now - created_at > CONGRESSMCP_REVALIDATE_DAYS``: fetch the GovInfo package summary, compare ``lastModified``; rebuild if changed. |
 | ``version=None``, resolution cached and within ``CONGRESSMCP_VERSION_TTL`` | Use the cached resolution, no network. ``version_resolution: "cached"``, ``cache.version_hit: true``. |
 | ``version=None``, TTL expired | Re-resolve via congress.gov (+ GovInfo package summary). |
@@ -59,7 +60,8 @@ class LoadedBillText:
     # True when the index was served from a published package file rather than
     # parsed and built on this call (§9 ``cache.index_hit``).
     index_hit: bool = False
-    # §9 ``version_resolution``: fresh | cached | cached_offline.
+    # §9 ``version_resolution``: fresh | cached | cached_offline | pinned
+    # ("pinned": the caller named the version; no resolution occurred).
     version_resolution: str = "fresh"
     # §9 ``cache.version_hit``: the version came from the cached resolution.
     version_hit: bool = False
@@ -165,7 +167,11 @@ async def load_bill_text(ctx: Context, congress: int, bill_type: str, number: in
     if version is None and store is not None:
         _put_resolution(store, congress, bill_type, number, resolved, now)
 
-    return await _serve_resolved(store, resolved, legs, version_resolution="fresh", version_hit=False, resolved_at=now)
+    return await _serve_resolved(
+        store, resolved, legs,
+        version_resolution="pinned" if version is not None else "fresh",
+        version_hit=False, resolved_at=now,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +228,7 @@ async def _serve_explicit_from_cache(
     )
     trace.set_source(package_id, version, None)
     return LoadedBillText(resolved, index.parsed, index, legs.as_ms(), index_hit=True,
-                          version_resolution="fresh", version_hit=False)
+                          version_resolution="pinned", version_hit=False)
 
 
 async def _serve_cached_resolution(

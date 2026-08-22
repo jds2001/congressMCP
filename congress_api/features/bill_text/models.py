@@ -60,7 +60,9 @@ class ErrorEnvelope(BaseModel):
 class BillTextEnvelope(BaseModel):
     package_id: str
     version: str
-    version_resolution: Literal["fresh", "cached", "cached_offline"] = "fresh"
+    # pinned: the caller named the version, so no resolution -- fresh or cached
+    # -- occurred (§10 ruling 2026-08-22). cache.version_hit stays false there.
+    version_resolution: Literal["fresh", "cached", "cached_offline", "pinned"] = "fresh"
     version_resolved_at: str
     # VERSION ISSUES ONLY. Non-null means the served text is not simply the version the
     # caller asked for: the latest listed version was unavailable and the server fell
