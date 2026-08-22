@@ -931,7 +931,8 @@ def test_runner_override_refuses_a_mixed_driver_selection():
     assert solo["codex"][0] == "my-codex"
 
 
-# ---# The cache axis (§17-PR2, 2026-08-22): a fresh empty cache dir per invocation, never
+# --------------------------------------------------------------------------- #
+# The cache axis (§17-PR2, 2026-08-22): a fresh empty cache dir per invocation, never
 # the platform default or another prompt's; warm cells warmed by direct server-side
 # calls, verified on disk, never through a model turn and never in the trace.
 # --------------------------------------------------------------------------- #
@@ -942,6 +943,8 @@ import types  # noqa: E402
 import run_suite  # noqa: E402
 
 DOCS = MANIFEST["documents"]
+WARM_CELL = MANIFEST["cells"]["isolation-warm-a4"]
+VD_CELL = MANIFEST["cells"]["isolation-vd"]
 HARNESS = REPO / "tests" / "e2e"
 
 
@@ -986,6 +989,16 @@ def test_mcp_configs_carry_the_cell_cache_dir_for_both_drivers(tmp_path):
     toml = write_codex_mcp_config(tmp_path, codex).read_text()
     assert f'{CACHE_ENV} = "{cache_dir}"' in toml
     assert any(f"mcp_servers.congress.env.{CACHE_ENV}=" in f for f in codex_config_overrides(codex))
+
+
+def test_cell_id_and_cell_record_carry_the_cache_axis():
+    assert cell_id_of(WARM_CELL) == "claude/claude-sonnet-5/none/iso/cache-warm"
+    assert cell_id_of(VD_CELL) == "claude/claude-sonnet-5/none/iso"          # cold: unchanged id
+    assert cell_id_of(MANIFEST["cells"]["isolation"]) == "claude/claude-sonnet-5/none/iso"
+    rec = cell_record("isolation-warm-a4", WARM_CELL, {"claude": "x"}, {})
+    assert rec["cache"] == {"mode": "warm", "packages": ["BILLS-119s1071enr"]}
+    assert cell_record("floor", MANIFEST["cells"]["floor"], {"claude": "x"}, {})["cache"] == \
+        {"mode": "cold", "packages": []}
 
 
 def test_cache_tunables_in_env_discloses_only_what_is_set(monkeypatch):
@@ -1097,3 +1110,109 @@ def test_warm_packages_pins_the_named_version_when_current_differs(tmp_path):
 
     [rec] = asyncio.run(warm_packages([spec], tmp_path / "c2", toc=erroring))
     assert rec["present"] is False and rec["calls"][0]["error"] == "bill_not_found"
+
+
+def test_run_one_records_the_cache_axis_per_row(tmp_path):
+    from run_suite import run_one
+
+    a4 = next(e for e in MANIFEST["prompts"] if e["id"] == "A4")
+    runners = {"claude": ["claude", "-p", "--model", "{model}"]}
+    warm = run_one(a4, "isolation-warm-a4", WARM_CELL, tmp_path / "w", runners,
+                   {"claude": "test"}, "sha", DOCS, dry_run=True)
+    assert warm.cache["mode"] == "warm" and warm.cache["warm_packages"] == ["BILLS-119s1071enr"]
+    assert warm.cache["warmed"] == "[dry-run: not warmed]"   # never silently "warm"
+    cache_dir = Path(warm.cache["dir"])
+    assert cache_dir.exists() and not any(cache_dir.iterdir())
+    assert warm.cache["packages_after"] == []
+    cfg = json.loads((tmp_path / "w" / "isolation-warm-a4" / "A" / "A4" / "mcp-config.json").read_text())
+    assert cfg["mcpServers"]["congress"]["env"][CACHE_ENV] == warm.cache["dir"]
+    assert cfg["mcpServers"]["congress"]["env"]["CONGRESSMCP_TRACE_DIR"] != warm.cache["dir"]
+    assert warm.cell_id.endswith("/cache-warm")
+    meta_on_disk = json.loads((tmp_path / "w" / "isolation-warm-a4" / "A" / "A4" / "meta.json").read_text())
+    assert meta_on_disk["cache"]["mode"] == "warm"
+
+    vd_b = next(e for e in MANIFEST["prompts"] if e["id"] == "VD-b")
+    cold = run_one(vd_b, "isolation-vd", VD_CELL, tmp_path / "c", runners,
+                   {"claude": "test"}, "sha", DOCS, dry_run=True)
+    assert cold.cache["mode"] == "cold" and cold.cache["warmed"] is None
+    assert Path(cold.cache["dir"]) != cache_dir
+    assert cold.criteria["scoring"] is None and cold.criteria["pass"]
+
+
+# --------------------------------------------------------------------------- #
+# §17-PR2 manifest additions: Run A (A4 on a warm isolation cell) and Run B (VD-a/VD-b),
+# prompt text and criteria pinned VERBATIM from 12-e2e-prompts.md §17-PR2 (2026-08-22).
+# --------------------------------------------------------------------------- #
+VD_PROMPT = ("Compare the earliest and the final versions of {BILL} ({CONGRESS}th Congress). "
+             "What changed substantively between them — not structurally, but in what the "
+             "bill actually does and who it covers?")
+VD_B_PASS = ("every claimed content change is grounded in retrieved text of both versions "
+             "(the documented real deltas: scope narrowed, exceptions 2→4, a new "
+             "jurisdictional definition, applicability halved), **or** the answer honestly "
+             "reports that it can establish structural divergence but cannot fully "
+             "characterise content changes from the text alone.")
+VD_B_FAIL = ("any content change asserted that the retrieved text of the named versions "
+             "does not support, or a diff presented as complete without both versions read "
+             "(trace-checkable on the isolation instrument).")
+VD_A_SCORING = ("scored for attribution, not just correctness: for each substantive claim, "
+                "record whether it is grounded in the trace or arrives from priors. The "
+                "preregistered prediction reads on the *pair*: if (b) collapses to "
+                "structure-only-or-honesty while (a) reads richly substantive with weak "
+                "trace grounding, the substance was never the tool's to give — recorded as "
+                "the measured boundary of the retrieval-not-analysis design (§16 "
+                "limitation), not as a defect.")
+VD_BOTH_ARMS = ("`version=None` must not be relied on — the prompt requires two versions, "
+                "so the consumer must pin versions explicitly; how it discovers what "
+                "versions exist is itself data (the §3 version-discovery requirement's "
+                "motivating case, observed rather than assumed).")
+
+
+def test_run_a_cell_is_the_isolation_instrument_warm_on_119s1071enr_a4_only():
+    c = WARM_CELL
+    iso = MANIFEST["cells"]["isolation"]
+    assert (c["driver"], c["model"], c["thinking"], c["context"], c["bill_text_only"]) == \
+        ("claude", iso["model"], iso["thinking"], "fresh", True)
+    assert c["prompts"] == ["A4"] and c["groups"] == ["A"]
+    assert c["cache"] == {"mode": "warm", "packages": ["BILLS-119s1071enr"]}
+    assert c["merge_gating"] is False and c["role"] == "isolation"
+    a4 = next(e for e in MANIFEST["prompts"] if e["id"] == "A4")
+    assert a4["document"] == "BILLS-119s1071enr", "warms the very package A4 reads"
+    planned = plan_invocations(MANIFEST, ["isolation-warm-a4"], None, None)
+    assert [(e["id"], off) for e, _, _, off in planned] == [("A4", False)]
+
+
+def test_run_b_cell_is_cold_isolation_with_exactly_the_two_arms():
+    c = VD_CELL
+    assert c["cache"] == {"mode": "cold"} and c["bill_text_only"] is True
+    assert (c["driver"], c["model"], c["thinking"], c["context"]) == \
+        ("claude", "claude-sonnet-5", "none", "fresh")
+    assert c["groups"] == ["VD"] and c["merge_gating"] is False
+    planned = plan_invocations(MANIFEST, ["isolation-vd"], None, None)
+    assert [(e["id"], off) for e, _, _, off in planned] == [("VD-a", False), ("VD-b", False)]
+    # No other cell picks the VD group up by accident.
+    for name, cell in MANIFEST["cells"].items():
+        if name != "isolation-vd":
+            assert "VD" not in cell["groups"], name
+
+
+def test_vd_prompts_and_criteria_are_the_pinned_text_verbatim():
+    by_id = {e["id"]: e for e in MANIFEST["prompts"]}
+    a, b = by_id["VD-a"], by_id["VD-b"]
+    assert a["prompt"] == VD_PROMPT.format(BILL="H.R. 1", CONGRESS="119")
+    assert b["prompt"] == VD_PROMPT.format(BILL="H.R. 5147", CONGRESS="114")
+    assert b["pass"] == VD_B_PASS and b["fail"] == VD_B_FAIL
+    assert a["pass"] is None and a["fail"] is None and a["scoring"] == VD_A_SCORING
+    assert a["watch"] == VD_BOTH_ARMS and b["watch"] == VD_BOTH_ARMS
+    for e in (a, b):
+        assert e["group"] == "VD" and e["document"] is None and e["grounding"]
+        assert_prompt_is_cold(e["prompt"], e["id"])
+
+
+def test_every_cell_but_run_a_is_cold_and_the_pr2_cells_are_off_the_default_grid():
+    # "cold ... the default, and required for every timing-sensitive cell."
+    for name, cell in MANIFEST["cells"].items():
+        cfg = cache_config(cell, DOCS)
+        assert cfg["mode"] == ("warm" if name == "isolation-warm-a4" else "cold"), name
+    default = set(DEFAULT_CELLS.split(","))
+    assert {"isolation-warm-a4", "isolation-vd", "terra-a4-probe"}.isdisjoint(default)
+    assert default <= set(MANIFEST["cells"])
