@@ -77,6 +77,16 @@ SCHEMA_VERSION = 1
 # §10 exists to prevent, and CI fails on it.
 RENDERING_FINGERPRINT = "9f1e3a1d811af5728435b9a837f00ae0a1123daa06dbed90270a808ecb16a601"
 
+# The authoritative backstop (§10 tail, ruled 2026-08-21): a golden BUILD. The
+# three in-tree trimmed fixtures are built through the real build path and every
+# stored row is dumped in canonical order (index.canonical_rows_digest); this
+# is the sha256 over those dumps. It moves on any change that would make a
+# rebuilt package differ from a cached one -- parser semantics (AMENDATORY_RE,
+# amends resolution), segmenter, schema, tokenizer -- and on nothing else.
+# Same rule: bump SCHEMA_VERSION AND re-pin, in one commit. (Trimmed fixtures
+# detect change; they prove nothing about correctness -- §13.)
+GOLDEN_BUILD_FINGERPRINT = "67087f4596bf2409147e50703b361883c64edf710c525f8a04cd8e5ea6982ae8"
+
 # ``PRAGMA application_id`` stamped into every package database. ASCII "CMCP".
 # Adoption of an orphan file (present on disk, absent from the manifest) first
 # checks this so an unrelated SQLite file dropped into packages/ is never

@@ -490,3 +490,40 @@ def rendering_fingerprint() -> str:
         h.update(_symbol_digest_input(module_name, dotted).encode())
         h.update(b"\n--\n")
     return h.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Golden-build fingerprint (spec §10 tail, ruled 2026-08-21)
+# ---------------------------------------------------------------------------
+
+# The AST tripwire above measures SOURCE -- a proxy. This measures the property:
+# every stored row of a built package, in canonical order, deterministic
+# columns only. A change anywhere (parser semantics such as AMENDATORY_RE or
+# amends resolution, the segmenter, the schema, the tokenizer) that would make a
+# rebuilt package differ from a cached one moves this digest; a pure refactor
+# does not. tests build the in-tree trimmed fixtures through the real build path
+# and pin the result to cache.GOLDEN_BUILD_FINGERPRINT.
+GOLDEN_TABLES: tuple[tuple[str, str], ...] = (
+    ("document", "SELECT * FROM document"),
+    ("units", "SELECT * FROM units ORDER BY id"),
+    ("segments", "SELECT * FROM segments ORDER BY id"),
+    # The FTS index content is derived from segments + tokenizer; its vocabulary
+    # (term, doc count, total count) captures tokenizer changes cheaply.
+    ("seg_vocab", "SELECT term, doc, cnt FROM seg_vocab ORDER BY term"),
+)
+
+
+def canonical_rows_digest(conn: sqlite3.Connection) -> str:
+    """sha256 over a canonical dump of GOLDEN_TABLES from a built package."""
+    conn.row_factory = sqlite3.Row
+    h = hashlib.sha256()
+    for table, sql in GOLDEN_TABLES:
+        h.update(f"## {table}\n".encode())
+        cur = conn.execute(sql)
+        columns = [d[0] for d in cur.description]
+        h.update(json.dumps(columns).encode())
+        h.update(b"\n")
+        for row in cur:
+            h.update(json.dumps([row[c] for c in columns], ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            h.update(b"\n")
+    return h.hexdigest()
