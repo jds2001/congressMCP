@@ -434,7 +434,8 @@ async def test_service_cold_then_warm(store, govinfo):
     warm = await service_mod.load_bill_text(None, 119, "s", 1071, None)
     assert warm.index_hit is True
     assert govinfo.downloads == 1, "XML not re-downloaded on a hit"
-    assert govinfo.summaries == 2, "package summary (lastModified) still fetched"
+    # Within CONGRESSMCP_VERSION_TTL the cached resolution is used: no network at all.
+    assert govinfo.summaries == 1 and warm.version_resolution == "cached" and warm.version_hit is True
     assert warm.resolved.xml_bytes is None
     assert warm.timing["parse_ms"] is None and warm.timing["index_ms"] is None, "§4: null the legs that did not run"
     assert warm.parsed.sections_indexed == cold.parsed.sections_indexed
@@ -447,6 +448,10 @@ async def test_service_reissue_rebuilds(store, govinfo):
     first = await service_mod.load_bill_text(None, 119, "s", 1071, None)
     first.index.close()
     govinfo.last_modified = "2026-02-02T00:00:00Z"
+    # A reissue is noticed when the version is re-resolved (TTL expired): age the
+    # cached resolution past the TTL.
+    res = service_mod.get_store().manifest().get_resolution(119, "s", 1071)
+    service_mod.get_store().manifest().put_resolution(dataclasses.replace(res, resolved_at=res.resolved_at - 10**6))
     second = await service_mod.load_bill_text(None, 119, "s", 1071, None)
     assert second.index_hit is False
     assert govinfo.downloads == 2
@@ -514,7 +519,7 @@ async def test_envelope_reports_index_hit_and_null_parse_ms(monkeypatch):
         resolved=ResolvedBillText(PACKAGE_ID, "enr", "2026-08-21T00:00:00Z", None, LAST_MODIFIED, None),
         parsed=parsed,
         index=BillTextIndex(parsed),
-        timing={"fetch_ms": 1.0, "parse_ms": None, "index_ms": None},
+        timing={"resolve_ms": 1.0, "download_ms": None, "parse_ms": None, "index_ms": None},
         index_hit=True,
     )
 

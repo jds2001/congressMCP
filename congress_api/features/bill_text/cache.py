@@ -95,7 +95,7 @@ APPLICATION_ID = 0x434D4350
 
 # Manifest schema generation, kept in the manifest's ``PRAGMA user_version``.
 # The manifest is derived, so a mismatch simply drops and recreates it.
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +409,23 @@ CREATE TABLE IF NOT EXISTS packages (
   lease_expires_at REAL
 );
 CREATE INDEX IF NOT EXISTS packages_lru ON packages(last_accessed_at);
+
+-- Last successful version=None resolution per bill (§10 freshness table):
+-- within CONGRESSMCP_VERSION_TTL it is reused without any network call
+-- (version_resolution "cached"); past the TTL it is re-resolved, and if the
+-- network is unavailable it is served as "cached_offline" with resolved_at
+-- disclosed. Derived data like everything else here.
+CREATE TABLE IF NOT EXISTS resolutions (
+  congress INTEGER NOT NULL,
+  bill_type TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  package_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  resolved_at REAL NOT NULL,
+  resolved_at_iso TEXT NOT NULL,
+  note TEXT,
+  PRIMARY KEY (congress, bill_type, number)
+);
 """
 
 
@@ -443,6 +460,20 @@ class ManifestRow:
             lease_holder=row["lease_holder"],
             lease_expires_at=row["lease_expires_at"],
         )
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """The last successful ``version=None`` resolution for one bill."""
+
+    congress: int
+    bill_type: str
+    number: int
+    package_id: str
+    version: str
+    resolved_at: float
+    resolved_at_iso: str
+    note: str | None = None
 
 
 class Manifest:
@@ -487,6 +518,7 @@ class Manifest:
                 # start over. An empty, fresh file has user_version 0.
                 with conn:
                     conn.execute("DROP TABLE IF EXISTS packages")
+                    conn.execute("DROP TABLE IF EXISTS resolutions")
                     conn.execute(f"PRAGMA user_version = {MANIFEST_SCHEMA_VERSION}")
             with conn:
                 conn.executescript(_MANIFEST_DDL)
@@ -604,7 +636,69 @@ class Manifest:
     def clear(self) -> int:
         with self.conn:
             cur = self.conn.execute("DELETE FROM packages")
+            self.conn.execute("DELETE FROM resolutions")
         return cur.rowcount
+
+    def set_created_at(self, package_id: str, when: float) -> None:
+        """Explicit-version revalidation (§10): the package was re-checked
+        against GovInfo's lastModified and is unchanged; restart the clock."""
+        with self.conn:
+            self.conn.execute("UPDATE packages SET created_at = ? WHERE package_id = ?", (when, package_id))
+
+    def mark_resolved(self, package_id: str, resolved_at: float) -> None:
+        """This package was reached via a version=None resolution at ``resolved_at``."""
+        with self.conn:
+            self.conn.execute(
+                "UPDATE packages SET resolved_from_version_query = 1, version_resolved_at = ? WHERE package_id = ?",
+                (resolved_at, package_id),
+            )
+
+    # -- version resolutions (§10 freshness table) -------------------------------
+
+    def get_resolution(self, congress: int, bill_type: str, number: int) -> Resolution | None:
+        row = self.conn.execute(
+            "SELECT * FROM resolutions WHERE congress = ? AND bill_type = ? AND number = ?",
+            (congress, bill_type.lower(), number),
+        ).fetchone()
+        if row is None:
+            return None
+        return Resolution(
+            congress=int(row["congress"]),
+            bill_type=row["bill_type"],
+            number=int(row["number"]),
+            package_id=row["package_id"],
+            version=row["version"],
+            resolved_at=float(row["resolved_at"]),
+            resolved_at_iso=row["resolved_at_iso"],
+            note=row["note"],
+        )
+
+    def put_resolution(self, resolution: Resolution) -> None:
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO resolutions (congress, bill_type, number, package_id, version,
+                                         resolved_at, resolved_at_iso, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(congress, bill_type, number) DO UPDATE SET
+                  package_id = excluded.package_id, version = excluded.version,
+                  resolved_at = excluded.resolved_at, resolved_at_iso = excluded.resolved_at_iso,
+                  note = excluded.note
+                """,
+                (
+                    resolution.congress, resolution.bill_type.lower(), resolution.number,
+                    resolution.package_id, resolution.version, resolution.resolved_at,
+                    resolution.resolved_at_iso, resolution.note,
+                ),
+            )
+
+    def remove_resolution(self, congress: int, bill_type: str, number: int) -> bool:
+        with self.conn:
+            cur = self.conn.execute(
+                "DELETE FROM resolutions WHERE congress = ? AND bill_type = ? AND number = ?",
+                (congress, bill_type.lower(), number),
+            )
+        return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

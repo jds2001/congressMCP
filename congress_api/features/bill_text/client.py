@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import contextvars
 import os
+import time
 import random
 import re
 from dataclasses import dataclass
@@ -190,6 +192,23 @@ class BillTextError(Exception):
 
 
 SkipDownload = Callable[[str, "str | None"], bool]
+
+# Seconds spent in the GovInfo XML download leg(s) during the current call, or
+# None when no download ran. The service reads it to report timing.download_ms
+# separately from resolution (§9: null a leg that did not run). Set by
+# fetch_govinfo_package; reset by the service before each call.
+DOWNLOAD_SECONDS: contextvars.ContextVar[float | None] = contextvars.ContextVar("bill_text_download_seconds", default=None)
+
+# Error codes that mean "the network / upstream is unavailable" as opposed to
+# "the bill or version does not exist". These -- and raw httpx transport errors
+# -- are what the §10 offline rows key on.
+OFFLINE_CODES = frozenset({"congress_unavailable", "govinfo_unavailable", "govinfo_versions_unavailable"})
+
+
+def is_offline_error(exc: BaseException) -> bool:
+    if isinstance(exc, BillTextError):
+        return exc.code in OFFLINE_CODES
+    return isinstance(exc, httpx.HTTPError)
 
 
 async def resolve_and_fetch_bill_text(
@@ -449,20 +468,24 @@ async def fetch_govinfo_package(
             raise BillTextError("bill_dtd_unavailable", f"GovInfo package {package_id} did not include a Bill DTD XML link.")
         if skip_download is not None and skip_download(package_id, last_modified):
             return last_modified, None
-        download = await _govinfo_request(client, "GET", xml_url, api_key, stream=True)
-        if download.status_code >= 400:
-            await download.aclose()
-            raise BillTextError("govinfo_unavailable", "GovInfo XML download failed.", {"status_code": download.status_code})
-        chunks = []
-        size = 0
+        started = time.perf_counter()
         try:
-            async for chunk in download.aiter_bytes():
-                size += len(chunk)
-                if size > MAX_XML_BYTES:
-                    raise BillTextError("document_too_large", f"GovInfo XML exceeded {MAX_XML_BYTES} bytes.")
-                chunks.append(chunk)
+            download = await _govinfo_request(client, "GET", xml_url, api_key, stream=True)
+            if download.status_code >= 400:
+                await download.aclose()
+                raise BillTextError("govinfo_unavailable", "GovInfo XML download failed.", {"status_code": download.status_code})
+            chunks = []
+            size = 0
+            try:
+                async for chunk in download.aiter_bytes():
+                    size += len(chunk)
+                    if size > MAX_XML_BYTES:
+                        raise BillTextError("document_too_large", f"GovInfo XML exceeded {MAX_XML_BYTES} bytes.")
+                    chunks.append(chunk)
+            finally:
+                await download.aclose()
         finally:
-            await download.aclose()
+            DOWNLOAD_SECONDS.set((DOWNLOAD_SECONDS.get() or 0.0) + (time.perf_counter() - started))
         return last_modified, b"".join(chunks)
 
 

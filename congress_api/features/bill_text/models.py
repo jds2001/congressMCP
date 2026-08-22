@@ -27,16 +27,19 @@ class CacheStatus(BaseModel):
 
 
 class Timing(BaseModel):
-    """Server-measured wall-clock per phase, in milliseconds. fetch_ms covers
-    congress.gov version resolution plus the GovInfo package summary, and the
-    document download when one happened. On a persisted-index hit
-    (cache.index_hit true) neither the parse nor the index build runs, so
-    parse_ms and index_ms are both null (§4: null a leg that did not run -- a
-    nonzero figure beside index_hit: true would read like a rebuild). The cost
-    of opening the published file is inside total_ms. search_ms is present
-    only for search_bill_text."""
+    """Server-measured wall-clock per phase, in milliseconds; each leg is null
+    when it did not run (§4/§9). resolve_ms: congress.gov version resolution
+    plus the GovInfo package summary (lastModified); download_ms: the GovInfo
+    document download; parse_ms: Bill DTD parse + chunk; index_ms: FTS5 build.
+    On a persisted-index hit parse_ms and index_ms are null; within the
+    version-resolution TTL resolve_ms is null too, and download_ms is null
+    whenever the document was not fetched. The cost of opening a cached
+    package is inside total_ms only. search_ms is present only for
+    search_bill_text. total_ms is server compute -- a lower bound on
+    client-observed latency."""
 
-    fetch_ms: float
+    resolve_ms: float | None
+    download_ms: float | None
     parse_ms: float | None
     index_ms: float | None
     search_ms: float | None = None

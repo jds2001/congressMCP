@@ -305,6 +305,24 @@ class PackageStore:
                 logger.warning("eviction failed: %s", exc)
         return index, published
 
+    def cached_versions(self, congress: int, bill_type: str, number: int) -> list[str]:
+        """Version codes of this bill that have a package file on disk at the
+        current schema (the filesystem is authoritative). Listed in the
+        version_resolution_unavailable error so a caller can pin one offline."""
+        import re as _re
+
+        prefix = f"BILLS-{congress}{bill_type.lower()}{number}"
+        pattern = _re.compile(rf"^{_re.escape(prefix)}([a-z][a-z0-9]*)$")
+        versions = []
+        for path in self.layout.package_files():
+            parsed = cache.parse_package_filename(path.name)
+            if parsed is None or not parsed.is_current:
+                continue
+            match = pattern.match(parsed.package_id)
+            if match:
+                versions.append(match.group(1))
+        return sorted(set(versions))
+
     # -- startup reconcile / recovery (§10) ----------------------------------------
 
     def reconcile(self, *, now: float | None = None) -> ReconcileReport:
