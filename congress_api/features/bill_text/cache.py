@@ -67,6 +67,16 @@ logger = logging.getLogger(__name__)
 # a file at a newer version is ignored and left in place (§10).
 SCHEMA_VERSION = 1
 
+# Tripwire for the rule above (the F26 pattern). sha256 over the AST/values of
+# index.RENDERING_SYMBOLS -- segment joining, delimiter rendering, the header
+# separator (the block join), whitespace/punctuation normalization, byte-split
+# boundary rules, the tokenizer and the storage schema. tests pin
+# index.rendering_fingerprint() to this. When a change to any of those is
+# deliberate: bump SCHEMA_VERSION AND re-pin this to the new digest, in the
+# same commit. A digest change without a version bump is the stale-index bug
+# §10 exists to prevent, and CI fails on it.
+RENDERING_FINGERPRINT = "9f1e3a1d811af5728435b9a837f00ae0a1123daa06dbed90270a808ecb16a601"
+
 # ``PRAGMA application_id`` stamped into every package database. ASCII "CMCP".
 # Adoption of an orphan file (present on disk, absent from the manifest) first
 # checks this so an unrelated SQLite file dropped into packages/ is never

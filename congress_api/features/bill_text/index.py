@@ -13,15 +13,20 @@ them, to ``FTS_TOKENIZER``, or to how ``display_text`` is rendered must bump
 
 from __future__ import annotations
 
+import ast
 import functools
+import hashlib
+import inspect
 import json
 import re
 import sqlite3
+import textwrap
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
 from .models import AncestorNode
+from . import parser as _parser
 from .parser import ParsedBill, Segment, Unit, collapse_ws
 
 
@@ -413,3 +418,75 @@ def load_parsed(conn: sqlite3.Connection) -> ParsedBill:
         struck_sections_excluded=int(doc["struck_sections_excluded"]),
         subtree_bytes={k: int(v) for k, v in json.loads(doc["subtree_bytes"]).items()},
     )
+
+
+# ---------------------------------------------------------------------------
+# Rendering-version tripwire (spec §10 tail; the F26 pattern)
+# ---------------------------------------------------------------------------
+
+# Everything that decides what a cached index SERVES, beyond the table schema:
+# segment joining and delimiter rendering (the header separator is the block
+# join), whitespace/punctuation normalization of stored text, the byte-split
+# boundary rules, and the storage/tokenizer definitions themselves. Changing any
+# of these without bumping cache.SCHEMA_VERSION would let a stale index serve
+# differently-chunked or differently-rendered content under the same key (F12
+# reordered results on a whitespace-only change). tests pin
+# rendering_fingerprint() against cache.RENDERING_FINGERPRINT.
+RENDERING_SYMBOLS: tuple[tuple[str, str], ...] = (
+    ("parser", "MAX_UNIT_BYTES"),
+    ("parser", "_QUOTE_OPEN"),
+    ("parser", "_QUOTE_CLOSE"),
+    ("parser", "_ATTACH_PUNCT"),
+    ("parser", "join_segments"),
+    ("parser", "render_segments"),
+    ("parser", "strip_quote_delimiters"),
+    ("parser", "collapse_ws"),
+    ("parser", "_tighten_punct"),
+    ("parser", "normalize_text"),
+    ("parser", "byte_split_unit"),
+    ("parser", "_segment_atoms"),
+    ("parser", "_bound_atom"),
+    ("parser", "_chunk_unit"),
+    ("parser", "Segment"),
+    ("parser", "Unit.display_text"),
+    ("parser", "Unit.byte_length"),
+    ("index", "FTS_TOKENIZER"),
+    ("index", "_SCHEMA_SQL"),
+    ("index", "BillTextIndex._build"),
+    ("index", "load_parsed"),
+)
+
+
+def _strip_docstrings(tree: ast.AST) -> ast.AST:
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
+            body = getattr(node, "body", None)
+            if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) and isinstance(body[0].value.value, str):
+                del body[0]
+    return tree
+
+
+def _symbol_digest_input(module_name: str, dotted: str) -> str:
+    module = _parser if module_name == "parser" else __import__(__name__, fromlist=["_"])
+    obj = module
+    for part in dotted.split("."):
+        obj = getattr(obj, part)
+    if isinstance(obj, property):
+        obj = obj.fget
+    if callable(obj) or inspect.isclass(obj):
+        source = textwrap.dedent(inspect.getsource(obj))
+        # AST, not text: comments and formatting are free; logic is not.
+        return ast.dump(_strip_docstrings(ast.parse(source)), include_attributes=False)
+    return repr(obj)
+
+
+def rendering_fingerprint() -> str:
+    """sha256 over the AST/values of RENDERING_SYMBOLS. Pinned in
+    cache.RENDERING_FINGERPRINT; the pin and cache.SCHEMA_VERSION change
+    together, deliberately, or CI fails."""
+    h = hashlib.sha256()
+    for module_name, dotted in RENDERING_SYMBOLS:
+        h.update(f"{module_name}.{dotted}\n".encode())
+        h.update(_symbol_digest_input(module_name, dotted).encode())
+        h.update(b"\n--\n")
+    return h.hexdigest()
