@@ -49,6 +49,10 @@ Set `busy_timeout=5000`. Manifest writes in short explicit transactions.
 
 Explicitly cached versions remain fully queryable offline. `version=None` offline is best-effort and always labelled.
 
+> **`version_resolution` on explicit-version calls — RULED 2026-08-22, resolving the implementer's flag (a).** An explicit-version cache hit shipped labelled `"fresh"`; measured live, that call performs **no resolution at all** (every timing leg null, zero network). `"fresh"` claims a resolution ran; `"cached"` claims a cached one was consulted; both are false. **Add the value `"pinned"`:** the caller named the version, so no resolution — fresh or cached — occurred. `cache.version_hit` stays `false` (no resolution cache was consulted), and A3's rule that `version_resolution_note` fires only on `version=None` is unchanged — a pinned call made no choice to disclose. The enum is free to extend before PR 2 ships and permanent after (the `request_note` "free now" logic); a field that makes a false claim on the most deliberate call shape is the A3/descriptive-claim failure built into the schema.
+>
+> **Tool-description obligations for cache/offline labels — RULED 2026-08-22, resolving flag (b): §7's rule does NOT bind here.** That rule exists for **input-shaping** semantics — a consumer cannot construct good queries without knowing what a query does. Cache labels shape no input; they qualify output, and the load-bearing disclosure (possible staleness) is carried by the **active** `version_resolution_note` — the disclosure form measured to propagate at every tier (F6/V21), and certified live here with a dated, plain-language warning. Adding cache exposition to the descriptions is width in every session for a sometimes-condition the response already discloses actively. Revisit only on consumer-layer evidence (a §17-style trace showing `cached_offline` misread).
+
 ### Concurrent publication
 
 - Temp name `.{package_id}.{uuid4().hex[:8]}.tmp`, **same directory** (same filesystem) as the final path.
