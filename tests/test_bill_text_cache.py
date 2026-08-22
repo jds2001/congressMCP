@@ -533,10 +533,43 @@ def test_publish_package_os_error_with_existing_destination_adopts(tmp_path, mon
         Path(dst).write_bytes(b"WINNER")
         raise PermissionError(13, "in use")
 
+    monkeypatch.setattr(cache.os, "link", lambda src, dst: (_ for _ in ()).throw(OSError(95, "not supported")))
     monkeypatch.setattr(cache.os, "replace", fake_replace)
     path, published = cache.publish_package(temp, final)
     assert (path, published) == (final, False)
     assert final.read_bytes() == b"WINNER" and not temp.exists()
+
+
+def test_publish_package_atomic_claim_loses_when_link_finds_destination(tmp_path, monkeypatch):
+    # The race os.replace cannot see: the destination appears AFTER the exists()
+    # check. os.link refuses with FileExistsError -> loser adopts, temp gone.
+    layout = cache.CacheLayout(tmp_path)
+    layout.ensure_dirs()
+    final = layout.package_path("X")
+    temp = layout.temp_path("X")
+    temp.write_bytes(b"LOSER")
+    real_link = cache.os.link
+
+    def racing_link(src, dst):
+        Path(dst).write_bytes(b"WINNER")  # another process publishes first
+        return real_link(src, dst)        # -> FileExistsError
+
+    monkeypatch.setattr(cache.os, "link", racing_link)
+    path, published = cache.publish_package(temp, final)
+    assert (path, published) == (final, False)
+    assert final.read_bytes() == b"WINNER" and not temp.exists()
+
+
+def test_publish_package_falls_back_to_replace_where_links_are_unsupported(tmp_path, monkeypatch):
+    layout = cache.CacheLayout(tmp_path)
+    layout.ensure_dirs()
+    final = layout.package_path("X")
+    temp = layout.temp_path("X")
+    temp.write_bytes(b"MINE")
+    monkeypatch.setattr(cache.os, "link", lambda src, dst: (_ for _ in ()).throw(OSError(95, "not supported")))
+    path, published = cache.publish_package(temp, final)
+    assert (path, published) == (final, True)
+    assert final.read_bytes() == b"MINE" and not temp.exists()
 
 
 def test_publish_package_os_error_without_destination_propagates(tmp_path, monkeypatch):
@@ -548,6 +581,7 @@ def test_publish_package_os_error_without_destination_propagates(tmp_path, monke
     def fake_replace(src, dst):
         raise OSError(5, "disk on fire")
 
+    monkeypatch.setattr(cache.os, "link", lambda src, dst: (_ for _ in ()).throw(OSError(95, "not supported")))
     monkeypatch.setattr(cache.os, "replace", fake_replace)
     with pytest.raises(OSError):
         cache.publish_package(temp, layout.package_path("X"))

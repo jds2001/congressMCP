@@ -240,6 +240,10 @@ def test_loser_rule_when_os_replace_itself_refuses(store, monkeypatch):
         Path(dst).write_bytes(winner_bytes)  # ...and have "another process" win mid-flight
         raise PermissionError(13, "in use")
 
+    def unsupported_link(src, dst):
+        raise OSError(95, "Operation not supported")  # e.g. a filesystem without hard links
+
+    monkeypatch.setattr(cache.os, "link", unsupported_link)
     monkeypatch.setattr(cache.os, "replace", racing_replace)
     l_index, l_pub = store.build_and_publish(parsed_fixture(), last_modified=LAST_MODIFIED)
     monkeypatch.setattr(cache.os, "replace", real_replace)

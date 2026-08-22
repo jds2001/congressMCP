@@ -289,6 +289,9 @@ class CacheSettings:
     version_ttl: int = DEFAULT_VERSION_TTL_SECONDS
     revalidate_days: int = DEFAULT_REVALIDATE_DAYS
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "cache_dir", Path(self.cache_dir))
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "CacheSettings":
         environ = os.environ if environ is None else environ
@@ -315,6 +318,10 @@ class CacheLayout:
     """Paths under one cache root. Pure path arithmetic plus directory listing."""
 
     root: Path
+
+    def __post_init__(self) -> None:
+        # Accept a str root (direct constructors, subprocess-marshalled paths).
+        object.__setattr__(self, "root", Path(self.root))
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "CacheLayout":
@@ -901,14 +908,28 @@ def publish_package(temp_path: Path, final_path: Path) -> tuple[Path, bool]:
     if final_path.exists():
         _discard(temp_path)
         return final_path, False
+    # Claim the final name ATOMICALLY: os.link fails with FileExistsError if
+    # another builder got there first, which os.replace would silently
+    # overwrite (two concurrent builders both "won" in V11 before this). Where
+    # hard links are unsupported (some filesystems), fall back to os.replace.
     try:
-        os.replace(temp_path, final_path)
+        os.link(temp_path, final_path)
+    except FileExistsError:
+        logger.info("lost publication race for %s; adopting existing", final_path.name)
+        _discard(temp_path)
+        return final_path, False
     except OSError as exc:
-        if final_path.exists():
-            logger.info("lost publication race for %s (%s); adopting existing", final_path.name, exc)
-            _discard(temp_path)
-            return final_path, False
-        raise
+        try:
+            os.replace(temp_path, final_path)
+        except OSError as exc2:
+            if final_path.exists():
+                logger.info("lost publication race for %s (%s); adopting existing", final_path.name, exc2)
+                _discard(temp_path)
+                return final_path, False
+            raise
+        logger.debug("published %s via os.replace (link unsupported: %s)", final_path.name, exc)
+        return final_path, True
+    _discard(temp_path)
     return final_path, True
 
 
