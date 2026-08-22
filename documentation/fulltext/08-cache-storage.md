@@ -56,8 +56,8 @@ Explicitly cached versions remain fully queryable offline. `version=None` offlin
 ### Concurrent publication
 
 - Temp name `.{package_id}.{uuid4().hex[:8]}.tmp`, **same directory** (same filesystem) as the final path.
-- Build → **close the DB and validate** → `os.replace()` to the final name.
-- **Loser:** if the destination already exists on publish, discard your temp and adopt the published file.
+- Build → **close the DB and validate** → **claim the final name atomically** → adopt-on-loss.
+- **Loser:** if the destination already exists on publish, discard your temp and adopt the published file. **The claim must be atomic — AMENDED 2026-08-22 (F34, found by V11 S3b):** the original wording invited check-then-act, and that is how it was first implemented — `exists()` then `os.replace()`, and POSIX `os.replace` **silently overwrites**, so in the race window both builders "won." The mechanism is pinned: claim with `os.link(tmp, final)` (raises `FileExistsError` if another builder got there first → loser rule), falling back to `os.replace` only on filesystems without hard links. One valid file existed either way — the defect was the loser rule, not integrity — but adoption validation's "complete by construction" argument leans on exactly-one-publisher, so it is load-bearing, not cosmetic.
 - **Windows:** `os.replace()` onto a destination another process holds open raises. Catch, discard temp, use the existing file.
 - **Startup:** unlink `.tmp` files older than 1 hour.
 
