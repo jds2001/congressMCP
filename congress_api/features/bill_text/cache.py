@@ -576,6 +576,16 @@ class Manifest:
         with self.conn:
             self.conn.execute("UPDATE packages SET bytes = ? WHERE package_id = ?", (size, package_id))
 
+    def lease(self, package_id: str, holder: str, expires_at: float) -> None:
+        """Best-effort cross-process 'being served' marker (§10): eviction in
+        another process skips a package whose lease is held by someone else and
+        has not expired. Advisory only -- documented as best-effort."""
+        with self.conn:
+            self.conn.execute(
+                "UPDATE packages SET lease_holder = ?, lease_expires_at = ? WHERE package_id = ?",
+                (holder, expires_at, package_id),
+            )
+
     def remove(self, package_id: str) -> bool:
         with self.conn:
             cur = self.conn.execute("DELETE FROM packages WHERE package_id = ?", (package_id,))

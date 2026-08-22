@@ -20,6 +20,7 @@ import logging
 import os
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,6 +77,24 @@ class ReconcileReport:
         )
 
 
+@dataclass
+class EvictionReport:
+    """What one eviction pass did (§10)."""
+
+    total_before: int = 0
+    total_after: int = 0
+    cap: int = 0
+    evicted: list[str] = field(default_factory=list)
+    skipped_protected: list[str] = field(default_factory=list)
+    skipped_leased: list[str] = field(default_factory=list)
+    skipped_locked: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def over_cap(self) -> bool:
+        return self.total_after > self.cap
+
+
 class PackageStore:
     """Package files under one cache root.
 
@@ -91,7 +110,10 @@ class PackageStore:
         self.layout = settings.layout
         self._validated: dict[Path, tuple[_Stamp, str]] = {}
         self._manifest: cache.Manifest | None = None
+        # Lease holder id for the best-effort cross-process eviction lease.
+        self.holder = f"{os.getpid()}:{uuid.uuid4().hex[:8]}"
         self.last_reconcile: ReconcileReport | None = None
+        self.last_eviction: EvictionReport | None = None
         if reconcile:
             # Startup reconcile (§10): one listdir + one manifest query. Never
             # fails construction -- a cache that cannot be reconciled is served
@@ -139,6 +161,7 @@ class PackageStore:
             return
         try:
             manifest.touch(package_id)
+            manifest.lease(package_id, self.holder, time.time() + cache.LEASE_TTL_SECONDS)
         except Exception as exc:
             logger.warning("manifest touch failed for %s: %s", package_id, exc)
 
@@ -273,6 +296,13 @@ class PackageStore:
         if index is None:
             # The file at the final name (ours or the winner's) is not servable.
             raise PackageBuildError(f"published package {final.name} is not servable")
+        if published:
+            # After each index write, evict oldest until under cap (§10). Never
+            # the package being served in this call; never fail the call.
+            try:
+                self.last_eviction = self.evict(protect={package_id})
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("eviction failed: %s", exc)
         return index, published
 
     # -- startup reconcile / recovery (§10) ----------------------------------------
@@ -400,6 +430,80 @@ class PackageStore:
             logger.warning("could not unlink %s: %s", path.name, exc)
             return False
 
+    # -- eviction (§10) --------------------------------------------------------------
+
+    def evict(self, *, protect: set[str] | frozenset[str] = frozenset(), now: float | None = None) -> EvictionReport:
+        """LRU-evict package files until the cap is met (§10).
+
+        - Cap is CONGRESSMCP_CACHE_MAX_BYTES across packages/; the total is the
+          sum of actual ``stat`` sizes of every package file, never manifest rows.
+        - Candidates are manifest rows, least-recently-accessed first.
+        - Never evict a package in ``protect`` (being served in this call), nor
+          one whose lease is held by another process and unexpired (best-effort).
+        - Windows cannot unlink an open file: an OSError skips that candidate and
+          moves on. If every candidate is skipped, proceed over cap and log.
+        - Never raises for the user's call.
+        """
+        now = time.time() if now is None else now
+        report = EvictionReport(cap=self.settings.max_bytes)
+        report.total_before = report.total_after = self.layout.total_bytes()
+        if report.total_after <= report.cap:
+            return report
+        manifest = self.manifest()
+        if manifest is None:
+            logger.warning("cache over cap (%d > %d) and no manifest to evict by", report.total_after, report.cap)
+            return report
+        try:
+            rows = manifest.rows()  # LRU order
+        except Exception as exc:
+            report.errors.append(f"manifest query: {exc}")
+            return report
+        for row in rows:
+            if report.total_after <= report.cap:
+                break
+            if row.package_id in protect:
+                report.skipped_protected.append(row.package_id)
+                continue
+            if (
+                row.lease_holder
+                and row.lease_holder != self.holder
+                and row.lease_expires_at is not None
+                and row.lease_expires_at > now
+            ):
+                report.skipped_leased.append(row.package_id)
+                continue
+            path = self.layout.packages_dir / row.filename
+            size = _size(path)
+            if size is None:
+                # Row without a file: drop it (recovery table) and move on.
+                self._drop_row(row.package_id)
+                continue
+            self._validated.pop(path, None)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                self._drop_row(row.package_id)
+                continue
+            except OSError as exc:
+                report.skipped_locked.append(row.package_id)
+                logger.info("eviction skipped %s: %s", row.filename, exc)
+                continue
+            report.total_after -= size
+            report.evicted.append(row.package_id)
+            try:
+                manifest.remove(row.package_id)
+            except Exception as exc:
+                report.errors.append(f"row {row.package_id}: {exc}")
+        if report.over_cap:
+            logger.warning(
+                "cache still over cap after eviction: %d > %d bytes (evicted %d; protected %d, leased %d, locked %d)",
+                report.total_after, report.cap, len(report.evicted),
+                len(report.skipped_protected), len(report.skipped_leased), len(report.skipped_locked),
+            )
+        elif report.evicted:
+            logger.info("evicted %d package(s): %s", len(report.evicted), ", ".join(report.evicted))
+        return report
+
     # -- helpers ------------------------------------------------------------------
 
     def _unlink(self, path: Path, package_id: str) -> None:
@@ -418,6 +522,13 @@ class PackageStore:
                 manifest.remove(package_id)
             except Exception as exc:
                 logger.warning("manifest remove failed for %s: %s", package_id, exc)
+
+
+def _size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
 
 
 def _discard(path: Path) -> None:
