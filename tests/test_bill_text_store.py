@@ -436,7 +436,7 @@ async def test_service_cold_then_warm(store, govinfo):
     assert govinfo.downloads == 1, "XML not re-downloaded on a hit"
     assert govinfo.summaries == 2, "package summary (lastModified) still fetched"
     assert warm.resolved.xml_bytes is None
-    assert warm.timing["parse_ms"] is None and warm.timing["index_ms"] >= 0
+    assert warm.timing["parse_ms"] is None and warm.timing["index_ms"] is None, "§4: null the legs that did not run"
     assert warm.parsed.sections_indexed == cold.parsed.sections_indexed
     assert _hits(warm.index, ["icebreaker"]) == _hits(service_mod.BillTextIndex(cold.parsed), ["icebreaker"])
     warm.index.close()
@@ -514,7 +514,7 @@ async def test_envelope_reports_index_hit_and_null_parse_ms(monkeypatch):
         resolved=ResolvedBillText(PACKAGE_ID, "enr", "2026-08-21T00:00:00Z", None, LAST_MODIFIED, None),
         parsed=parsed,
         index=BillTextIndex(parsed),
-        timing={"fetch_ms": 1.0, "parse_ms": None, "index_ms": 0.5},
+        timing={"fetch_ms": 1.0, "parse_ms": None, "index_ms": None},
         index_hit=True,
     )
 
@@ -524,7 +524,8 @@ async def test_envelope_reports_index_hit_and_null_parse_ms(monkeypatch):
     monkeypatch.setattr(tools_mod, "load_bill_text", fake_load)
     toc = await tools_mod.get_bill_toc(None, congress=119, bill_type="s", number=1071, depth=2)
     assert toc["cache"] == {"index_hit": True, "version_hit": False}
-    assert toc["timing"]["parse_ms"] is None
+    assert toc["timing"]["parse_ms"] is None and toc["timing"]["index_ms"] is None
+    assert toc["timing"]["total_ms"] >= 0
     # Wire-safe: the envelope round-trips through JSON with the null.
     json.dumps(toc)
     search = await tools_mod.search_bill_text(None, congress=119, bill_type="s", number=1071, queries=["icebreaker"], max_hits=5)

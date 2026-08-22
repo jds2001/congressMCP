@@ -30,14 +30,15 @@ class Timing(BaseModel):
     """Server-measured wall-clock per phase, in milliseconds. fetch_ms covers
     congress.gov version resolution plus the GovInfo package summary, and the
     document download when one happened. On a persisted-index hit
-    (cache.index_hit true) no parse runs and parse_ms is null (§4: null a leg
-    that did not run); index_ms is then the time to open the package file
-    rather than to build the index. search_ms is present only for
-    search_bill_text."""
+    (cache.index_hit true) neither the parse nor the index build runs, so
+    parse_ms and index_ms are both null (§4: null a leg that did not run -- a
+    nonzero figure beside index_hit: true would read like a rebuild). The cost
+    of opening the published file is inside total_ms. search_ms is present
+    only for search_bill_text."""
 
     fetch_ms: float
     parse_ms: float | None
-    index_ms: float
+    index_ms: float | None
     search_ms: float | None = None
     total_ms: float
 

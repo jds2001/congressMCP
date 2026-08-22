@@ -84,9 +84,10 @@ async def load_bill_text(ctx: Context, congress: int, bill_type: str, number: in
         return store is not None and store.fresh_path(package_id, last_modified) is not None
 
     # Timing legs (§4): fetch_ms is every network leg (resolution, package
-    # summary, XML download, any refetch); parse_ms is the parse or null when no
-    # parse ran; index_ms is building the index on a miss or opening the
-    # published file on a hit.
+    # summary, XML download, any refetch); parse_ms and index_ms are the parse
+    # and the index build, and NULL on a hit -- §4 nulls a leg that did not
+    # run, because a nonzero figure beside index_hit: true reads like a
+    # rebuild. The cost of opening the published file stays inside total_ms.
     fetch_s = 0.0
     t0 = time.perf_counter()
     resolved = await resolve_and_fetch_bill_text(
@@ -96,14 +97,11 @@ async def load_bill_text(ctx: Context, congress: int, bill_type: str, number: in
 
     index: BillTextIndex | None = None
     index_hit = False
-    open_s = 0.0
     if resolved.xml_bytes is None:
         # The store said it had the file a moment ago. Open it; if it vanished in
         # between (eviction, `cache clear`, another process), refetch -- the
         # recovery table's "file missing -> treat as miss, refetch".
-        t_open = time.perf_counter()
         index = store.open(resolved.package_id, resolved.last_modified) if store is not None else None
-        open_s = time.perf_counter() - t_open
         if index is not None:
             index_hit = True
         else:
@@ -117,6 +115,7 @@ async def load_bill_text(ctx: Context, congress: int, bill_type: str, number: in
     trace.set_source(resolved.package_id, resolved.version, resolved.xml_bytes)
 
     parse_ms: float | None = None
+    index_ms: float | None = None
     if index is None:
         assert resolved.xml_bytes is not None
         t_parse = time.perf_counter()
@@ -137,7 +136,6 @@ async def load_bill_text(ctx: Context, congress: int, bill_type: str, number: in
         index_ms = round((time.perf_counter() - t_index) * 1000, 1)
     else:
         parsed = index.parsed
-        index_ms = round(open_s * 1000, 1)
     timing = {
         "fetch_ms": round(fetch_s * 1000, 1),
         "parse_ms": parse_ms,
