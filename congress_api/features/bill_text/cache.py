@@ -40,6 +40,7 @@ import os
 import platform
 import re
 import sqlite3
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -72,10 +73,36 @@ SCHEMA_VERSION = 1
 # separator (the block join), whitespace/punctuation normalization, byte-split
 # boundary rules, the tokenizer and the storage schema. tests pin
 # index.rendering_fingerprint() to this. When a change to any of those is
-# deliberate: bump SCHEMA_VERSION AND re-pin this to the new digest, in the
-# same commit. A digest change without a version bump is the stale-index bug
-# §10 exists to prevent, and CI fails on it.
-RENDERING_FINGERPRINT = "9f1e3a1d811af5728435b9a837f00ae0a1123daa06dbed90270a808ecb16a601"
+# deliberate: bump SCHEMA_VERSION AND re-pin EVERY entry below to its new
+# digest, in the same commit. A digest change without a version bump is the
+# stale-index bug §10 exists to prevent, and CI fails on it.
+#
+# VERSION-KEYED (F37, ruled 2026-08-23): ``ast.dump`` of identical source is
+# not stable across interpreter series -- the pin computed on 3.14 failed on
+# CI's 3.12 -- so the instrument shares the failure class it detects unless
+# the key names the interpreter. One entry per supported series: CI (3.12, per
+# .github/workflows/test.yml) and dev (3.14). An unlisted series SKIPS the
+# AST tripwire with a named reason (tests); the golden-build digest below is
+# interpreter-stable (it passed on 3.12 in the same CI run) and still guards
+# everywhere. Do not chase a version-independent AST normalization --
+# ``ast.unparse`` is not contractually stable across versions either. To add
+# a series: print ``index.rendering_fingerprint()`` under that interpreter
+# (``uv python install 3.X`` / pyenv / a CI step) and add the entry.
+RENDERING_FINGERPRINTS: dict[str, str] = {
+    "3.12": "3520d328d56185699b4cfc55d9309fa589bff5ef5c3b50aa9b568491aa8893ac",
+    "3.14": "9f1e3a1d811af5728435b9a837f00ae0a1123daa06dbed90270a808ecb16a601",
+}
+
+
+def interpreter_series(version_info=None) -> str:
+    """``"3.12"``-style key for the running (or given) interpreter."""
+    info = sys.version_info if version_info is None else version_info
+    return f"{info[0]}.{info[1]}"
+
+
+def expected_rendering_fingerprint(series: str | None = None) -> str | None:
+    """The pinned AST digest for this interpreter series, or None if unlisted."""
+    return RENDERING_FINGERPRINTS.get(series or interpreter_series())
 
 # The authoritative backstop (§10 tail, ruled 2026-08-21): a golden BUILD. The
 # three in-tree trimmed fixtures are built through the real build path and every

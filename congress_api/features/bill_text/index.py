@@ -431,7 +431,7 @@ def load_parsed(conn: sqlite3.Connection) -> ParsedBill:
 # of these without bumping cache.SCHEMA_VERSION would let a stale index serve
 # differently-chunked or differently-rendered content under the same key (F12
 # reordered results on a whitespace-only change). tests pin
-# rendering_fingerprint() against cache.RENDERING_FINGERPRINT.
+# rendering_fingerprint() against cache.RENDERING_FINGERPRINTS[<series>].
 RENDERING_SYMBOLS: tuple[tuple[str, str], ...] = (
     ("parser", "MAX_UNIT_BYTES"),
     ("parser", "_QUOTE_OPEN"),
@@ -481,9 +481,10 @@ def _symbol_digest_input(module_name: str, dotted: str) -> str:
 
 
 def rendering_fingerprint() -> str:
-    """sha256 over the AST/values of RENDERING_SYMBOLS. Pinned in
-    cache.RENDERING_FINGERPRINT; the pin and cache.SCHEMA_VERSION change
-    together, deliberately, or CI fails."""
+    """sha256 over the AST/values of RENDERING_SYMBOLS. Pinned per
+    interpreter series in cache.RENDERING_FINGERPRINTS (ast.dump is not stable
+    across series -- F37); every pin and cache.SCHEMA_VERSION change together,
+    deliberately, or CI fails."""
     h = hashlib.sha256()
     for module_name, dotted in RENDERING_SYMBOLS:
         h.update(f"{module_name}.{dotted}\n".encode())
