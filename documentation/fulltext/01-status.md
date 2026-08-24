@@ -1,6 +1,20 @@
 *(congressMCP bill-text spec — see `00-INDEX.md` for the file map, conventions, and settled decisions.)*
 
-## Status — 2026-08-21 (current) — PR 1 MERGED upstream
+## Status — 2026-08-24 (current) — PR 2 MERGED upstream; GovInfo `/search` work assigned
+
+**PR 2 merged upstream 2026-08-24** (maintainer-reported; squash `d7db421`, follow-ups `e4788ad` = #67, both on upstream master). Merge report: adversarial review gate **88/100** — the `os.link` claim protocol, the 7-point adoption gate, and the filename/path discipline held under attack; live on the maintainer's machine **cold 5.1 s → warm 74 ms** on the enrolled NDAA with `cache info` correct; the merged tree passes all 418 related tests alongside the master-side changes (#62 typed errors, #65 structured responses, #66 honest search) with zero conflicts.
+
+**Three maintainer follow-ups landed as #67 rather than bouncing back — triaged 2026-08-24 (§18, "Post-merge triage"):** (1) **F38 opened and reported-fixed** — malformed `version` escaped as `internal_error` on `get_bill_section`/`get_bill_toc` while `search_bill_text` caught it; validation hoisted to the top of `load_bill_text` so every caller inherits it; another binds-every-path instance on the three-tool seam (00-INDEX convention sharpened accordingly); adjudication owed, cheap, including a `version_not_available`-vs-"version_not_found" wire-naming check. (2) `tests/corpus/f36_scan.py` used a backslash inside an f-string expression — PEP 701, fine on CI's 3.12, SyntaxError on the repo's declared 3.10 floor — hoisted into a helper; F37's instrument-portability family, noted at F36. (3) Four F401 unused imports, housekeeping, no number.
+
+**Both questions posed in the PR description were answered yes, 2026-08-24.** (a) **§9 envelope convergence: the maintainer landed it themselves as #68 (`b006a10`) ahead of the v2.2.0 release.** Reported shape matches the F27 ruling exactly — single `format_error_response` choke point emitting `error.code`/`message`/`detail`/`remediation`, lowercase codes mapped 1:1 from the #53 classification, F22 URL-stripping in `detail`, structured tools additionally carrying a typed `error` field with `success: false`, routers returning envelopes instead of stringified `ToolError`s, and #65's `results_count`/typed-list coherence preserved as a binding coordination note. **F27 entry updated: reported-implemented, adjudication owed** (wire check on both tool families; the two legacy-pinning static tests retired, not grandfathered; F22 stripping observed live). (b) **The GovInfo `/search` replacement for `search_bills` is approved and assigned to this side.** Maintainer constraints recorded at D17/D18 and in the new spec: full-text restricted to the BILLS collection as the primary path; #66's honest-window behavior demoted to the offline/GovInfo-down fallback; reuse the existing `X-Api-Key` + backoff client; compose with the PR-2 cache (a hit can warm straight into `search_bill_text`).
+
+**Active work: `../govinfo-search-spec.md` (new — this is a pre-existing-tool fix, so its spec lives beside the register, not inside fulltext/).** Branch `feature/govinfo-search`. The D17/D18 regression probes are its preregistered acceptance floor; open design questions and the GovInfo `/search` measurement plan (semantics are to be measured, never assumed) are in that file.
+
+**Carried forward, unchanged:** F35+F36 (parser-side, land together; their place in the post-PR-2 queue is the maintainer's ordering), F16 confirmation, #17 requirements call, Group F verbatim rows, and the version-discovery surface ruling (§3) — note GovInfo `/search` returns per-version packages, so the new work may partially discharge it; flagged in the spec.
+
+---
+
+## Status — 2026-08-21 *(historical — superseded by the 2026-08-24 block above)* — PR 1 MERGED upstream
 
 **PR 1 landed upstream 2026-08-21** (maintainer-reported). §16 was finalized the day before with all six gates closed; the maintainer added one sentence to the shipped PR description post-final (the OpenAI web-grounding adoption note — accurate per the §17 cross-vendor measurements) — ratified.
 
