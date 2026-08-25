@@ -141,6 +141,17 @@ async def test_member_votes_rejects_entity_xml():
 # of the two original assertions live here: a miss is a readable zero, and
 # exactly one bounded upstream fetch happens per call.
 
+@pytest.fixture(autouse=True)
+def _keyed(monkeypatch):
+    """Full-suite isolation: whichever test file imports congress_api first
+    fixes api_config.API_KEY for the whole process, and a keyless import
+    order would turn every corpus-path test into api_key_missing. Pin a key
+    at the client's resolution point; the keyless F31 test overrides it."""
+    from congress_api.features.bill_text import client as _client_mod
+    monkeypatch.delenv("GOVINFO_API_KEY", raising=False)
+    monkeypatch.setattr(_client_mod, "API_KEY", "test-key-govinfo-search")
+
+
 class _FakeSearchResponse:
     status_code = 200
 

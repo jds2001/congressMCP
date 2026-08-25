@@ -27,6 +27,17 @@ class FakeContext:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _keyed(monkeypatch):
+    """Full-suite isolation: whichever test file imports congress_api first
+    fixes api_config.API_KEY for the whole process, and a keyless import
+    order would turn every corpus-path test into api_key_missing. Pin a key
+    at the client's resolution point; the keyless F31 test overrides it."""
+    from congress_api.features.bill_text import client as _client_mod
+    monkeypatch.delenv("GOVINFO_API_KEY", raising=False)
+    monkeypatch.setattr(_client_mod, "API_KEY", "test-key-govinfo-search")
+
+
 class FakeSearchResponse:
     def __init__(self, status_code=200, payload=None):
         self.status_code = status_code
