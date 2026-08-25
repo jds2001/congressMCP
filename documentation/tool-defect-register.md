@@ -42,9 +42,12 @@
 | D14 | MED | Guard hand-pasted at 81 sites, nothing enforced coverage | 7 routers | **coverage FIXED** `880cb53`; decorator open |
 | D15 | LOW | `from_date_time` / `fromDateTime` mixed permanently on the public surface | public MCP surface | OPEN |
 | D16 | LOW | Allowlist skip that never fires — documented exclusion is dead code | test quality | OPEN |
-| D17 | HIGH | **Noise presented as results** — `search_bills` OR-splits + substring-matches; `Act` carries every named-Act query | no — client-side filter | OPEN (after PR 2) |
-| D18 | HIGH | **Silent wrong answer** — `search_bills` scans a 250-bill recency window; bills unreachable by exact title; `offset`/`limit` incoherent | no | OPEN (after PR 2; **must land with or before any D17 matcher fix**) |
+| D17 | HIGH | **Noise presented as results** — `search_bills` OR-splits + substring-matches; `Act` carries every named-Act query | no — client-side filter | **CLOSED 2026-08-25** (GovInfo `/search` rebuild; see entry) |
+| D18 | HIGH | **Silent wrong answer** — `search_bills` scans a 250-bill recency window; bills unreachable by exact title; `offset`/`limit` incoherent | no | **CLOSED 2026-08-25** (same fix; see entry) |
 | D19 | LOW | `client_handler.py` calls async (deprecated) `ctx.error` un-awaited ×4 — client notification never happens | no | OPEN (reopened from `bug_008`'s failed refutation) |
+| D20 | LOW | `get_bill_details` renders counts without contents (`Cosponsors: 8`, `Subjects: 38`) — cardinality is the least actionable projection | no | OPEN `[CONSUMER 2026-08-25, unverified]` |
+| D21 | LOW | `get_bill_details` renders missing upstream fields as absence, not null — looks like a formatter branch, reads as a data fact | no | OPEN `[CONSUMER 2026-08-25, unverified]` |
+| D22 | LOW | No normalized bill status — consumers infer "died in committee" by eyeballing `Latest Action` strings | no | OPEN `[CONSUMER 2026-08-25, unverified]` |
 
 ---
 
@@ -281,6 +284,17 @@ assert search_bills(congress=119, keywords="Radiation Exposure Compensation") !=
 - Deliver as a table, one row per D-entry, evidence cited per row. Register updates happen here after it reports.
 
 **AUDIT DELIVERED AND ADJUDICATED 2026-08-21** — `upstream-reconciliation-audit-2026-08-21.md` (this directory, maintainer-copied), evidence in `audit_repro_results.json` / `audit_repro2_results.json`. 55 live calls through the registered tool functions; every row carries behavioral evidence; the refuted section was re-checked without re-raising. Spec-session spot-check: the D17/D18 differential (identical top-10 byte-for-byte across the two RECA queries, `has_HR4631: false`, drop-`Act` → 0) verified directly from the raw JSON; the first evidence file's D17 block has a failed extractor (`n_listed: 0`) superseded by the second file's corrected re-run — cite the second. Repro *scripts* referenced by the audit were not copied alongside the JSONs; the JSONs are the observations of record. **Outcomes applied to the rows below: D1 FIXED (`abb7550`), D5 PARTIAL, D7 PARTIAL, D11/D13 confirmed holding, D2/D3/D4/D6/D9/D10/D12/D14–D18 confirmed UNCHANGED, `bug_008`'s refutation withdrawn → D19.** Audit caveats recorded as stated: D4+D5's walk-twice ran on one member; D18 non-monotonicity neither shown nor falsified on one pair; D10 still synthetic-only. The #53 error-shape finding is recorded at the F27 entry (`fulltext/14-defect-priority.md`).
+
+## Consumer critique triage — Claude Desktop RECA session, 2026-08-25
+
+A real consumer session (maintainer's Claude Desktop, researching 119th-Congress RECA bills) critiqued the tool surface post-ship. Triage, with the spec session's verification per item — **three of its claims were measured before recording**:
+
+- **`amends` order-dependent extraction + `usc_note` blindness** → corroborates **F36** (`fulltext/14-defect-priority.md`), which is OPEN with a completed corpus measurement; the critique adds a minimal differential repro and a mechanism hypothesis, recorded there. Not a new entry.
+- **`search_bills` recall on multi-word queries** → **NOT a defect; a documentation gap.** Measured: the critique's five-word query returns `count: 1` from GovInfo raw — the tool faithfully reported upstream's implied-AND narrowing. Description strengthening ruled in the spec (§6.5 item 2 amendment); a per-term document-frequency diagnostic is recorded there as a deferred option (near-free quota makes it feasible; maintainer's call).
+- **"Discarded snippets" and "no exposed score"** → **impossible as asked.** Measured: the `/search` record carries no snippet, highlight, or score field (keys enumerated in the spec's critique triage). The website's highlights are not in the API. A snippet would require per-hit content fetches — a different feature, deferred.
+- **"Dedup reshuffles ranking"** → **NOT REPRODUCED.** Measured both directions: the acceptance artifact shows the tool preserving raw upstream order exactly, and the critique's own queries re-run raw put the RECA-titled bills *first*. No recorded query produces the claimed inversion. A trace is required to reopen.
+- **`get_bill_details` items** → **D20/D21/D22** above, unverified consumer reports pending repro.
+- **Design proposals routed to the maintainer, recorded not ruled:** `search_bills` split out of the `bills` operation multiplexer (the 400-word docstring inside a generic bag is a real context cost); a `verbose` flag gating `timing`/`cache`/diagnostic fields (note: reopens fulltext §4's settled always-on telemetry — the consumer-noise cost is the first real evidence against it, weigh accordingly); **`bills_amending(cite)` inverted index** — the strongest proposal here, turning the corpus crawl the session performed by hand into one call over per-section citations already extracted. Its stated prerequisite is correct and matches the standing queue: **F36 first** — an inverted index over an extractor with a known left-side blind spot would be confidently, silently wrong.
 
 ## Closed and refuted — kept so they are not re-raised
 
