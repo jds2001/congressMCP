@@ -304,3 +304,140 @@ def build_corpus_response(
         response["query_diagnostics"] = zero_diagnostics(
             upstream_query, congress, bill_type)
     return response
+
+
+# ---------------------------------------------------------------------------
+# Pagination (spec section 6.3)
+# ---------------------------------------------------------------------------
+#
+# The token is server-encoded and opaque. Its spec-named components are
+# offsetMark (the upstream cursor to fetch next) and records_consumed (the
+# exhaustion numerator against upstream count). It carries one additional
+# implementation component, ``skip``: the intra-page resume point. Reason,
+# recorded for the completion report: whole-page consumption plus the
+# ``limit`` output cap would LOSE bills whenever a page dedups to more
+# than ``limit`` bills (single-version bills make this the common case --
+# a 3x-limit page of one-version bills dedups to 3x limit), and A6 demands
+# enumeration without loss. Cursors are measured stable and replayable
+# (section 2b), so a partially-consumed page is resumed by replaying the
+# SAME cursor and skipping the records already consumed. skip=0 whenever a
+# page was fully consumed, in which case the token is exactly the spec's
+# two-field shape. The one tolerated duplication class (a bill whose
+# version records straddle a boundary reappears, same identity) covers the
+# resume boundary the same way it covers the upstream page boundary.
+
+_TOKEN_KEYS = {"offsetMark", "records_consumed", "skip"}
+
+
+def default_page_state() -> "dict[str, Any]":
+    return {"offsetMark": "*", "records_consumed": 0, "skip": 0}
+
+
+def encode_page_token(offset_mark: str, records_consumed: int,
+                      skip: int = 0) -> str:
+    import base64
+    import json
+    payload: "dict[str, Any]" = {
+        "offsetMark": offset_mark,
+        "records_consumed": records_consumed,
+    }
+    if skip:
+        payload["skip"] = skip
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_page_token(token: Any) -> "Optional[dict[str, Any]]":
+    """Decode and validate a page token; None on any malformation. (An
+    undecodable token cannot even produce an offsetMark to send upstream,
+    so the caller answers it directly instead of burning a doomed call.)"""
+    import base64
+    import binascii
+    import json
+    if not isinstance(token, str) or not token:
+        return None
+    padded = token + "=" * (-len(token) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, binascii.Error):
+        return None
+    if not isinstance(payload, dict) or not set(payload) <= _TOKEN_KEYS:
+        return None
+    offset_mark = payload.get("offsetMark")
+    records_consumed = payload.get("records_consumed")
+    skip = payload.get("skip", 0)
+    if not isinstance(offset_mark, str) or not offset_mark:
+        return None
+    if not isinstance(records_consumed, int) or isinstance(records_consumed, bool) \
+            or records_consumed < 0:
+        return None
+    if not isinstance(skip, int) or isinstance(skip, bool) or skip < 0:
+        return None
+    return {"offsetMark": offset_mark, "records_consumed": records_consumed,
+            "skip": skip}
+
+
+def paginate_records(records: "list[dict[str, Any]]", skip: int,
+                     limit: int) -> "tuple[list[dict[str, Any]], int, bool]":
+    """Consume one fetched page from ``skip``, selecting at most ``limit``
+    bills in rank order.
+
+    Returns (bills, consumed, page_exhausted). ``consumed`` counts the
+    effective records actually consumed this call: everything up to (not
+    including) the first record of the (limit+1)-th distinct bill, so no
+    record is ever silently dropped -- unconsumed records are resumed by
+    replaying this page. matched_versions comes from the consumed slice
+    only, so a full walk partitions the record stream exactly (the A6
+    set property across pages); a bill straddling the boundary reappears
+    on the next call with its remaining versions -- the one tolerated,
+    disclosed duplication class, same bill identity both times.
+    """
+    effective = records[skip:]
+    boundary = len(effective)
+    keys: "set[tuple[int, str, int]]" = set()
+    for index, record in enumerate(effective):
+        parsed = parse_package_id(record.get("packageId")) \
+            if isinstance(record, dict) else None
+        if parsed is None:
+            continue
+        key = parsed[:3]
+        if key not in keys:
+            if len(keys) == limit:
+                boundary = index
+                break
+            keys.add(key)
+    bills, _ = group_records(effective[:boundary])
+    return bills, boundary, boundary == len(effective)
+
+
+def compute_next_token(
+    count: int,
+    prior_consumed: int,
+    prior_skip: int,
+    consumed_now: int,
+    page_exhausted: bool,
+    request_cursor: str,
+    response_cursor: Optional[str],
+) -> "tuple[Optional[str], int]":
+    """(next_page_token, total_records_consumed).
+
+    Exhaustion is COMPUTED -- records_consumed >= count -- never inferred
+    from cursor nullness: an exhausted page still returns a non-null
+    offsetMark upstream (measured, section 2b); only that computation may
+    null the token.
+    """
+    total = prior_consumed + consumed_now
+    if total >= count:
+        return None, total
+    if not page_exhausted:
+        # Resume the same (measured-replayable) page past what was consumed.
+        return encode_page_token(request_cursor, total,
+                                 prior_skip + consumed_now), total
+    if response_cursor is None:
+        # Defensive: upstream owes a cursor when records remain; without one
+        # the walk cannot honestly continue. Log loudly rather than loop.
+        logger.warning(
+            "govinfo /search returned no offsetMark with %d of %d records "
+            "consumed; ending pagination early.", total, count)
+        return None, total
+    return encode_page_token(str(response_cursor), total, 0), total

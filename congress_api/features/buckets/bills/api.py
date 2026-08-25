@@ -6,17 +6,30 @@ to Congress.gov endpoints while maintaining enhancement capabilities.
 """
 
 from typing import Optional
+import json
 import logging
+
+import httpx
 from mcp.server.mcpserver import Context
 
 # Import our modular components
+from . import govinfo_search
 from .helpers import fetch_bill_data, build_bill_endpoint, validate_api_parameters
 from .processors import BillsDataProcessor
 from .formatters import BillsFormatter
 
+# The corpus search reuses the keyed, backoff-wrapped GovInfo transport.
+from ...bill_text.client import govinfo_search_post
+
 # Import existing reliability framework
 from ....core.validators import ParameterValidator
-from ....core.exceptions import CommonErrors, format_error_response, CongressionalAPIError
+from ....core.exceptions import (
+    APIErrorResponse,
+    CommonErrors,
+    CongressionalAPIError,
+    ErrorType,
+    format_error_response,
+)
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -114,98 +127,110 @@ async def get_bills(
 async def search_bills(
     ctx: Context,
     keywords: Optional[str] = None,
-    format: str = "json",
-    offset: Optional[int] = None,
-    limit: int = 10,
     congress: Optional[int] = None,
     bill_type: Optional[str] = None,
-    fromDateTime: Optional[str] = None,
-    toDateTime: Optional[str] = None,
-    sort: str = "updateDate+desc"
+    limit: int = 10,
+    page_token: Optional[str] = None
 ) -> str:
     """
-    Enhanced /bill endpoint with optional keyword filtering.
-    Maps to Congress.gov API + optional client-side keyword search.
-
-    This function provides the same core API access as get_bills() but adds
-    optional client-side keyword filtering for enhanced search capabilities.
+    Full-text search over the GovInfo BILLS corpus -- every version of
+    every congressional bill -- ranked by relevance (govinfo-search-spec
+    section 6). Replaces the D17/D18 recency-window filter: the query runs
+    against the corpus, not a page of recently-updated bills.
 
     Args:
         ctx: Context for API requests
-        keywords: Optional keywords for client-side filtering
-        format: Response format ('json' or 'xml')
-        offset: Starting record (0-based pagination)
-        limit: Maximum number of results (max 250)
-        congress: Optional Congress number
-        bill_type: Optional bill type
-        fromDateTime: Start date filter (YYYY-MM-DDTHH:MM:SSZ)
-        toDateTime: End date filter (YYYY-MM-DDTHH:MM:SSZ)
-        sort: Sort order ('updateDate+asc' or 'updateDate+desc')
+        keywords: Required search text, passed to GovInfo verbatim. Words
+            are ANDed; do not quote bill names (title:"..."/shorttitle:"..."
+            are the exact-title forms); OR/NOT and field operators pass
+            through. Blank keywords are rejected.
+        congress: Optional congress scope (positive integer, validated here)
+        bill_type: Optional bill type scope (hr, s, hjres, sjres, hconres,
+            sconres, hres, sres)
+        limit: Output cap in BILLS (clamps with advisory wording)
+        page_token: Opaque cursor from a previous response's
+            next_page_token, passed back verbatim
 
     Returns:
-        Formatted bills list or error message
+        JSON envelope (str): search_source, results (bill hits fronting the
+        most authoritative matched version, with matched_versions),
+        results_count, total_version_matches, next_page_token, and
+        corpus-level query_diagnostics on a zero. Errors return the
+        section-9 error envelope.
     """
     try:
-        # If no keywords provided, use core API function
-        if not keywords:
-            return await get_bills(
-                ctx=ctx,
-                format=format,
-                offset=offset,
-                limit=limit,
-                fromDateTime=fromDateTime,
-                toDateTime=toDateTime,
-                sort=sort,
-                congress=congress,
-                bill_type=bill_type
-            )
+        validated_keywords = govinfo_search.validate_keywords(keywords)
+        congress_value = govinfo_search.validate_congress(congress)
+        bill_type_value = govinfo_search.validate_bill_type(bill_type)
+        limit_value, request_note = govinfo_search.clamp_limit(limit)
 
-        # Client-side filter: fetch the largest page the API allows so the
-        # keyword match sees as many recently-updated bills as possible.
-        search_limit = 250
+        state = govinfo_search.default_page_state()
+        if page_token is not None:
+            decoded = govinfo_search.decode_page_token(page_token)
+            if decoded is None:
+                # An undecodable token cannot produce an offsetMark to send,
+                # so it is answered directly -- same code the canary path
+                # gives a malformed-but-decodable token (section 6.4).
+                return format_error_response(APIErrorResponse(
+                    error_type=ErrorType.VALIDATION,
+                    message=(
+                        "page_token could not be decoded. Tokens are opaque "
+                        "and must be passed back verbatim from a previous "
+                        "response's next_page_token."
+                    ),
+                    suggestions=[
+                        "Re-run the original query without page_token, then "
+                        "walk next_page_token verbatim page by page"
+                    ],
+                    error_code="govinfo_query_error",
+                    details={"parameter": "page_token"},
+                ))
+            state = decoded
 
-        # Core API call
-        response = await fetch_bill_data(
-            ctx=ctx,
-            congress=congress,
-            bill_type=bill_type,
-            format=format,
-            offset=offset,
-            limit=search_limit,
-            fromDateTime=fromDateTime,
-            toDateTime=toDateTime,
-            sort=sort
+        query = govinfo_search.build_query(
+            validated_keywords, congress_value, bill_type_value)
+        body = govinfo_search.build_search_body(
+            query, limit_value, state["offsetMark"])
+
+        try:
+            response = await govinfo_search_post(body)
+        except httpx.HTTPError as exc:
+            # Full section-6.4 failure flow (canary + labeled fallback)
+            # lands with the next step of the work order. Until then a
+            # transport failure is an explicit error envelope -- never an
+            # empty result set (the three-zeros rule).
+            return format_error_response(CommonErrors.api_server_error(
+                "govinfo /search",
+                message=f"GovInfo /search unreachable: {type(exc).__name__}",
+            ))
+
+        if response.status_code != 200:
+            return format_error_response(CommonErrors.api_server_error(
+                "govinfo /search", response.status_code))
+
+        data = response.json()
+        records = data.get("results") or []
+        count = int(data.get("count") or 0)
+        bills, consumed, page_exhausted = govinfo_search.paginate_records(
+            records, state["skip"], limit_value)
+        next_token, _ = govinfo_search.compute_next_token(
+            count=count,
+            prior_consumed=state["records_consumed"],
+            prior_skip=state["skip"],
+            consumed_now=consumed,
+            page_exhausted=page_exhausted,
+            request_cursor=state["offsetMark"],
+            response_cursor=data.get("offsetMark"),
         )
-
-        # Handle API errors
-        if "error" in response:
-            return str(response["error"])
-
-        # Extract bills for processing
-        bills = BillsDataProcessor.extract_bills_from_response(response)
-
-        # Apply keyword filtering
-        filtered_bills = await BillsDataProcessor.filter_by_keywords(bills, keywords, limit)
-
-        if not filtered_bills:
-            scope = f" in Congress {congress}" if congress else ""
-            return (
-                f"No match for '{keywords}' in the titles or policy areas of "
-                f"the {len(bills)} most recently updated bills{scope}.\n\n"
-                "Note: this operation only filters recently updated bills by "
-                "title/policy area -- it is not a full-text or historical "
-                "search. For text inside a bill use the search_bill_text "
-                "tool; for subject browsing use get_bill_subjects."
-            )
-
-        # Update response with filtered bills
-        response["bills"] = filtered_bills
-
-        # Format and return
-        return BillsFormatter.format_bills_list(
-            response,
-            f"Bills matching '{keywords}' (title/policy-area filter over "
-            f"the {len(bills)} most recently updated)")
+        return json.dumps(govinfo_search.build_corpus_response(
+            bills,
+            total_version_matches=count,
+            upstream_query=query,
+            congress=congress_value,
+            bill_type=bill_type_value,
+            next_page_token=next_token,
+            request_note=request_note,
+        ), indent=2)
 
     except CongressionalAPIError as e:
         return format_error_response(e.error_response)

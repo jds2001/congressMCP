@@ -102,6 +102,7 @@ async def bills(
     sort: Optional[str] = None,
     format: Optional[str] = None,
     offset: Optional[int] = None,
+    page_token: Optional[str] = None,
     # Date filtering
     fromDateTime: Optional[str] = None,
     toDateTime: Optional[str] = None,
@@ -134,7 +135,10 @@ async def bills(
         bill_type: hr, s, hjres, sjres, hconres, sconres, hres, sres
         bill_number: Specific bill number within type and congress
         limit: Results limit (max 250 for API compliance)
-        sort: updateDate+desc (newest first) or updateDate+asc
+        page_token: search_bills only -- opaque pagination cursor from a
+                    previous response's next_page_token, passed back verbatim
+        sort: updateDate+desc (newest first) or updateDate+asc (not for
+              search_bills, which is relevance-ranked)
         fromDateTime/toDateTime: Date range (YYYY-MM-DDTHH:MM:SSZ)
         
     Returns:
@@ -187,6 +191,7 @@ async def bills(
             'sort': sort,
             'format': format,
             'offset': offset,
+            'page_token': page_token,
             'fromDateTime': fromDateTime,
             'toDateTime': toDateTime,
             'days_back': days_back
