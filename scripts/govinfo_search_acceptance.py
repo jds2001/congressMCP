@@ -9,11 +9,17 @@ paths in the report). Requires a real api.data.gov key:
 
     CONGRESS_API_KEY=... python scripts/govinfo_search_acceptance.py
 
-A7 (the fallback cell) poisons only the GovInfo leg: govinfo_search_post
-builds a fresh httpx client per call (trust_env=True), so exporting
-HTTPS_PROXY to a dead local port for that one probe makes GovInfo
-unreachable while the congress.gov fallback -- which runs through the
-harness's pre-built client -- still works (the V11/step-5 technique).
+A7 (the fallback cell) poisons only the GovInfo leg with a
+HOST-SELECTIVE stdlib CONNECT proxy: api.govinfo.gov is refused at
+CONNECT time (502, logged), every other host tunnels for real. A blanket
+dead proxy cannot prove the discrimination A7 claims -- it kills BOTH
+legs whenever either builds a fresh trust_env client, so a "fallback"
+outcome would be unattributable. The probe also asserts its instrument
+premises before trusting the reading (a finding is only as valid as the
+instrument): under the poison, a fresh client must fail against
+api.govinfo.gov and succeed against api.congress.gov, and the proxy's
+own deny/tunnel logs attribute the GovInfo failure to the poison rather
+than a real outage.
 
 Probes (expected outcomes preregistered in spec section 3):
   A1  exact-title reachability     -> HR 4631 in results
@@ -28,7 +34,9 @@ Probes (expected outcomes preregistered in spec section 3):
 import asyncio
 import json
 import os
+import socket
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,6 +61,110 @@ class Ctx:
 
     async def error(self, *_):
         pass
+
+
+class HostSelectiveProxy:
+    """Minimal stdlib HTTP CONNECT proxy: named hosts are refused (502 on
+    CONNECT, before any egress), every other host is tunneled for real.
+
+    Serves as A7's poison. Keeps deny/tunnel logs so the artifact can
+    attribute a GovInfo transport failure to THIS instrument rather than
+    to a coincidental real outage."""
+
+    def __init__(self, deny_hosts):
+        self.deny = {h.lower() for h in deny_hosts}
+        self.denied = []
+        self.tunneled = []
+        self._srv = socket.create_server(("127.0.0.1", 0))
+        self.port = self._srv.getsockname()[1]
+        self.url = f"http://127.0.0.1:{self.port}"
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def start(self) -> "HostSelectiveProxy":
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=3)
+        try:
+            self._srv.close()
+        except OSError:
+            pass
+
+    def _serve(self) -> None:
+        self._srv.settimeout(0.2)
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(conn,),
+                             daemon=True).start()
+
+    def _handle(self, conn: socket.socket) -> None:
+        try:
+            conn.settimeout(15)
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    conn.close()
+                    return
+                data += chunk
+            request_line = data.split(b"\r\n", 1)[0].decode("latin-1")
+            parts = request_line.split(" ")
+            if len(parts) < 2 or parts[0].upper() != "CONNECT":
+                conn.sendall(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
+                conn.close()
+                return
+            host, _, port = parts[1].partition(":")
+            host = host.lower()
+            if host in self.deny:
+                self.denied.append(host)
+                conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                conn.close()
+                return
+            upstream = socket.create_connection((host, int(port or 443)),
+                                                timeout=15)
+            self.tunneled.append(host)
+            conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            a = threading.Thread(target=self._pipe, args=(conn, upstream),
+                                 daemon=True)
+            b = threading.Thread(target=self._pipe, args=(upstream, conn),
+                                 daemon=True)
+            a.start()
+            b.start()
+            a.join()
+            b.join()
+        except OSError:
+            pass
+        finally:
+            for sock in (conn,):
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _pipe(src_sock: socket.socket, dst_sock: socket.socket) -> None:
+        try:
+            while True:
+                chunk = src_sock.recv(65536)
+                if not chunk:
+                    break
+                dst_sock.sendall(chunk)
+        except OSError:
+            pass
+        finally:
+            for sock in (src_sock, dst_sock):
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
 
 
 def _out_dir() -> Path:
@@ -175,26 +287,79 @@ async def main() -> int:
     print(f"A6: {'PASS' if results['A6']['ok'] else 'FAIL'} "
           f"({results['A6']['note']})")
 
-    # A7 fallback cell: poison ONLY the GovInfo leg (fresh client per
-    # call reads HTTPS_PROXY at construction; the congress.gov fallback
-    # uses the pre-built client above).
-    os.environ["HTTPS_PROXY"] = "http://127.0.0.1:9"
-    os.environ["HTTP_PROXY"] = "http://127.0.0.1:9"
+    # A7 fallback cell: GovInfo unreachable while congress.gov stays
+    # reachable. The poison is host-selective (see module docstring) --
+    # a blanket dead proxy kills both legs and makes the outcome
+    # unattributable. Premises are asserted BEFORE the probe runs; if
+    # either fails, A7 is recorded VOID (instrument failure), never
+    # PASS or FAIL.
+    proxy = HostSelectiveProxy(deny_hosts=["api.govinfo.gov"]).start()
+    saved_env = {name: os.environ.get(name)
+                 for name in ("HTTPS_PROXY", "HTTP_PROXY")}
+    os.environ["HTTPS_PROXY"] = proxy.url
+    os.environ["HTTP_PROXY"] = proxy.url
+    premise = {"govinfo_dead": False, "congress_alive": False}
     try:
-        a7 = json.loads(await search_bills(
-            ctx, keywords="climate", congress=119))
+        # Premise 1: under the poison, a FRESH trust_env client (the same
+        # construction class govinfo_search_post uses) must fail against
+        # GovInfo -- refused at CONNECT, so no quota is spent and no key
+        # is needed.
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as fresh:
+                await fresh.get("https://api.govinfo.gov/search")
+            premise["govinfo_unexpected"] = "request succeeded"
+        except httpx.HTTPError as exc:
+            premise["govinfo_dead"] = True
+            premise["govinfo_error"] = type(exc).__name__
+        # Premise 2: the SAME environment must let a fresh client reach
+        # congress.gov (any HTTP status is reachability; auth is not the
+        # premise).
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as fresh:
+                resp = await fresh.get(
+                    "https://api.congress.gov/v3/bill",
+                    params={"format": "json"})
+            premise["congress_alive"] = True
+            premise["congress_status"] = resp.status_code
+        except httpx.HTTPError as exc:
+            premise["congress_error"] = type(exc).__name__
+        premise_ok = premise["govinfo_dead"] and premise["congress_alive"]
+
+        if premise_ok:
+            a7 = json.loads(await search_bills(
+                ctx, keywords="climate", congress=119))
+        else:
+            a7 = {"instrument_error": "A7 premise assertions failed; "
+                                      "probe not run"}
     finally:
-        os.environ.pop("HTTPS_PROXY", None)
-        os.environ.pop("HTTP_PROXY", None)
-    a7_ok = (a7.get("search_source") == "recency_window_fallback"
-             and a7.get("fallback_trigger") == "govinfo_unreachable"
-             and "window" in a7)
-    results["A7"] = {"ok": a7_ok, "expect":
-                     "labeled fallback, structurally distinguishable",
-                     "note": f"source={a7.get('search_source')} "
-                             f"trigger={a7.get('fallback_trigger')}"}
-    _record(directory, "A7", a7)
-    print(f"A7: {'PASS' if a7_ok else 'FAIL'} ({results['A7']['note']})")
+        for name, value in saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        proxy.stop()
+    # Attribution: the GovInfo failure must be OUR refusal, on the record.
+    premise["proxy_denied_hosts"] = sorted(set(proxy.denied))
+    premise["proxy_tunneled_hosts"] = sorted(set(proxy.tunneled))
+    attributed = "api.govinfo.gov" in premise["proxy_denied_hosts"]
+    if not premise_ok or not attributed:
+        results["A7"] = {"ok": False, "expect":
+                         "labeled fallback, structurally distinguishable",
+                         "note": "VOID: instrument premises not "
+                                 f"established ({premise})",
+                         "premise": premise}
+    else:
+        a7_ok = (a7.get("search_source") == "recency_window_fallback"
+                 and a7.get("fallback_trigger") == "govinfo_unreachable"
+                 and "window" in a7)
+        results["A7"] = {"ok": a7_ok, "expect":
+                         "labeled fallback, structurally distinguishable",
+                         "note": f"source={a7.get('search_source')} "
+                                 f"trigger={a7.get('fallback_trigger')}",
+                         "premise": premise}
+    _record(directory, "A7", {"premise": premise, "response": a7})
+    print(f"A7: {'PASS' if results['A7']['ok'] else 'FAIL'} "
+          f"({results['A7']['note']})")
 
     # A8
     await probe(
