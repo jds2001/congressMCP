@@ -132,12 +132,10 @@ async def bills(
     relevance. Parameters: keywords (required), congress, bill_type, limit,
     page_token, fromDateTime, toDateTime. It does NOT take
     offset/sort/format.
-    - Matching semantics: words are ANDed. Do NOT quote bill names --
-      quoted phrases are measured to miss bill title text. For an exact
-      title use title:"..." or shorttitle:"...". OR and NOT work, and
-      GovInfo field operators (congress:, billtype:, docnumber:,
-      billversion:, member:, committee:, actiondate:, ...) pass through
-      unchanged.
+    - Matching semantics: words are ANDed; do NOT quote bill names
+      (quoted phrases measured to miss title text); title:"..." /
+      shorttitle:"..." for exact titles; OR / NOT available; field
+      operators pass through.
     - keywords is required: blank or whitespace-only keywords are rejected
       (invalid_parameters), never sent.
     - Version discovery: each hit fronts the most authoritative matched

@@ -29,13 +29,16 @@ def test_item_1_names_the_corpus():
 
 
 def test_item_2_matching_semantics():
+    # Pins the section-6.5 item-2 normative text (Addendum 3): the
+    # matching-semantics bullet is that text verbatim, in the
+    # docstring's voice.
     doc = _doc()
     assert "words are ANDed" in doc
-    assert "Do NOT quote bill names" in doc
-    assert 'title:"..."' in doc and 'shorttitle:"..."' in doc
-    assert "OR and NOT" in doc
-    assert "pass through" in doc          # field operators
-    assert "billversion:" in doc
+    assert "do NOT quote bill names" in doc
+    assert "quoted phrases measured to miss title text" in doc
+    assert 'title:"..." / shorttitle:"..." for exact titles' in doc
+    assert "OR / NOT available" in doc
+    assert "field operators pass through" in doc
 
 
 def test_item_3_version_discovery():
