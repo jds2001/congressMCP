@@ -186,12 +186,26 @@ async def main() -> int:
               file=sys.stderr)
         return 2
 
+    from congress_api.core.api_config import BASE_URL
     from congress_api.core.client_handler import AppContext, SimpleCache
     from congress_api.features.buckets.bills.api import search_bills
 
     directory = _out_dir()
-    app_ctx = AppContext(api_key=os.getenv("CONGRESS_API_KEY") or "",
-                         client=httpx.AsyncClient(), cache=SimpleCache(60))
+    # Mirror the server lifespan's client exactly (client_handler
+    # app_lifespan): make_api_request issues RELATIVE paths ('/bill/119'),
+    # so a bare AsyncClient without base_url fails every congress.gov
+    # request with a RequestError -- which is precisely how the first A7
+    # re-run's fallback leg died while both premises held.
+    app_ctx = AppContext(
+        api_key=os.getenv("CONGRESS_API_KEY") or "",
+        client=httpx.AsyncClient(
+            base_url=BASE_URL,
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            limits=httpx.Limits(max_keepalive_connections=5,
+                                max_connections=10),
+            follow_redirects=True,
+        ),
+        cache=SimpleCache(60))
     ctx = Ctx(app_ctx)
     results = {}
 
