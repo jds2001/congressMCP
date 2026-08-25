@@ -1,6 +1,6 @@
 # `search_bills` on GovInfo `/search` — spec
 
-**Status: DESIGN COMPLETE 2026-08-24 — mandate settled, upstream documented (§2a) and measured (§2b), all nine design questions settled (maintainer answers folded in at Q3–Q8; Q2/Q9 ruled on measurement). §6 is the normative tool contract. Next: implementation handoff.** Branch `feature/govinfo-search`. Defects this work closes: **D17 and D18** (`tool-defect-register.md` — read their joint entry first; the differential probe table there is the diagnostic record). The conventions in `fulltext/00-INDEX.md` ("Conventions — these bind") apply here unchanged, including one-line-per-paragraph formatting and measurement-over-assertion — **vendor documentation is a claim with better provenance than an assumption, not a measurement; anything marked "per docs" below still gets a confirming probe before acceptance runs.**
+**Status: HANDED OFF 2026-08-24 — mandate settled, upstream documented (§2a) and measured (§2b), all nine design questions settled, §6 is the normative tool contract, and §7 is the implementation work order.** Branch `feature/govinfo-search`. Defects this work closes: **D17 and D18** (`tool-defect-register.md` — read their joint entry first; the differential probe table there is the diagnostic record). The conventions in `fulltext/00-INDEX.md` ("Conventions — these bind") apply here unchanged, including one-line-per-paragraph formatting and measurement-over-assertion — **vendor documentation is a claim with better provenance than an assumption, not a measurement; anything marked "per docs" below still gets a confirming probe before acceptance runs.**
 
 ## §1 Mandate — settled 2026-08-24, maintainer
 
@@ -158,4 +158,28 @@ The description is load-bearing (§2). The implementer words it; every item belo
 - The D17/D18 characterization tests from `tool-defect-register.md` land with the fix, per the register's standing rule.
 - Unit obligations, **each defense tested in isolation** (`fulltext/00-INDEX.md`): blank-keyword rejection; query assembly (scoping and sorts always present); the dedup grouping property as a **set comparison, not counts** — the fetched-record set equals the union over hits of `{bill} × matched_versions`; precedence fronting; token round-trip and computed exhaustion, including the non-null-cursor-on-last-page shape; every §6.4 row with the canary branching both ways; fallback labeling carrying trigger class and metadata; #65 coherence on both response shapes.
 
-**Handoff:** implementation proceeds from this section and reports back with artifacts per §3; the maintainer's acceptance run closes D17/D18 at the register.
+**Handoff:** the ordered work order is §7.
+
+## §7 Implementation handoff — work order, issued 2026-08-24
+
+For the implementation session. §6 is the contract; this is the order. **Commit per step** (repo convention: clear history over a clean log); unit tests land with the step they cover, each defense tested in isolation. The implementation session does not write into `documentation/`; artifacts go under the repo's `runs/` (gitignored — cite paths in the report). Reports name observable artifacts — failing inputs, before/after sets, wire captures — not summaries.
+
+1. **Client + query assembly (§6.1).** `/search` POST on the existing keyed GovInfo client (`X-Api-Key` header, backoff). Assembly: validated scoping (`congress` positive-int, bill type against the eight documented values), always-explicit `sorts: [{score, DESC}]`, `pageSize = min(3 × limit, 300)`, `resultLevel`/`historical` omitted. Blank/whitespace `keywords` → `invalid_parameters` envelope, never sent. Tests: assembly properties; blank rejection; the non-numeric-`congress` guard.
+2. **Response mapping (§6.2).** Bill-level dedup in rank order grouped on `packageId` parse (carry, don't reconstruct); precedence fronting per the shipped `fulltext` §3 53-code table; `matched_versions` precedence-ordered; `results_count` / `total_version_matches`; `search_source` marker. Tests: the grouping property as a **set comparison** (fetched records == union over hits of `{bill} × matched_versions`); precedence fronting including a dateless-version shape.
+3. **Pagination (§6.3).** Opaque token `{offsetMark, records_consumed}`; `next_page_token` null **only** when `records_consumed ≥ count`; `offset` and the policy-area parameter **removed** (schemas, router, exports, audit allowlist — the #66 removal pattern). Tests: token round-trip; computed exhaustion including the non-null-cursor-on-last-page shape (§2b); short pages.
+4. **Failure flow (§6.4).** All five rows; the canary (server-built constant query, zero caller input); fallback = the #66 honest window wearing `search_source: "recency_window_fallback"` + trigger class + window metadata; keyless → `api_key_missing` per F31, no fallback. Tests: every row; canary branching both ways; fallback labeling; a scrubbed-env keyless call (the F31 instrument).
+5. **Tool description (§6.5).** All seven mandatory items; check the shipped text against the §6.5 list item-by-item — an enumeration whose members are not individually pinned is the assumption it exists to reject.
+6. **Acceptance (§6.6).** Live A1–A8 run with artifacts (A7 via poisoned proxy, the V11/step-5 technique); the D17/D18 register regression probes land as characterization tests (the two asserts in their entry). Suite green; report per-probe artifacts.
+
+**Ride-alongs — cheap because the server is live under your hands anyway; wire captures, not summaries:**
+
+- **F38 check:** malformed `version` (e.g. `"e nr!"`) against `get_bill_section` and `get_bill_toc`; capture both envelopes and report **which code string ships** — §9 says `version_not_available`, the #67 commit title says "version_not_found". Do not rename anything; report, the spec session reconciles.
+- **F27 check (#68 adjudication evidence):** capture one str-tool error envelope and one structured-tool error envelope on the wire; report whether the two legacy-shape-pinning static tests were retired in #68; one captured `detail` carrying a URL, showing F22 query-stripping.
+
+**Explicitly out — do not touch:**
+
+- F35 + F36 (parser-side pair; separate batch with its own rendering-version bump).
+- The deferred options recorded above: the versions-only query mode (Q3), `shorttitle:` augmentation (Q2), the congress.gov policy-area tool (Q5), speculative prefetch (Q8), the on-500 fallback canary variants beyond §6.4.
+- Any change to the bill-text tools or the cache beyond reusing the client (except the two ride-along *captures*, which change nothing).
+- The #17 requirements call; anything in `fulltext/` — that surface is closed for this work order.
+- No new dependencies (standing).
