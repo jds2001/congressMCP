@@ -12,6 +12,10 @@
 
 ---
 
+## Fixture secrets are fake by construction — a fourth channel (2026-08-25)
+
+**Authored files are a leak channel no runtime check reaches.** The §17 harness needed a "fake" API key fixture and used a real-shaped string — which was the maintainer's live api.data.gov credential, committed at three sites in `tests/test_e2e_harness.py`, published upstream in PR #44, and proven live 2026-08-25 when it authenticated against GovInfo. Every F15-family defense (log redaction, envelope stripping, trace key-absence assertions) watches *runtime output*; none of them can see a secret typed into a tracked file. **F39** (§18) carries the remediation: rotation (the only remedy once published — rewrite reaches no clone, fork, release, or cache), fixture replacement, and a standing guard test. **The rule going forward: any secret-shaped string in a tracked file must be fake by construction** — visibly so (e.g. a `FAKE`-prefixed or single-repeated-character pattern of valid shape), enforced by a tree-scan test, because a real-shaped fixture eventually *is* real.
+
 ## Process side effects — a third channel nothing else covers
 
 **The coverage map has three channels, and only two are tested:**
