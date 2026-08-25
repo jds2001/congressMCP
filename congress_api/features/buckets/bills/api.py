@@ -19,7 +19,7 @@ from .processors import BillsDataProcessor
 from .formatters import BillsFormatter
 
 # The corpus search reuses the keyed, backoff-wrapped GovInfo transport.
-from ...bill_text.client import govinfo_search_post
+from ...bill_text.client import govinfo_api_key, govinfo_search_post
 
 # Import existing reliability framework
 from ....core.validators import ParameterValidator
@@ -192,21 +192,57 @@ async def search_bills(
         body = govinfo_search.build_search_body(
             query, limit_value, state["offsetMark"])
 
+        # ---- Failure flow (spec 6.4) ----
+        # Keyless: F31 -- api_key_missing, the operator must act. Nothing
+        # is sent and the fallback does NOT fire.
+        if not govinfo_api_key():
+            return format_error_response(govinfo_search.keyless_error())
+
         try:
             response = await govinfo_search_post(body)
         except httpx.HTTPError as exc:
-            # Full section-6.4 failure flow (canary + labeled fallback)
-            # lands with the next step of the work order. Until then a
-            # transport failure is an explicit error envelope -- never an
-            # empty result set (the three-zeros rule).
-            return format_error_response(CommonErrors.api_server_error(
-                "govinfo /search",
-                message=f"GovInfo /search unreachable: {type(exc).__name__}",
-            ))
+            # Network unreachable / timeout: no canary (it cannot answer a
+            # transport failure); labeled fallback.
+            return await _recency_window_fallback(
+                ctx, validated_keywords, congress_value, bill_type_value,
+                limit_value, trigger="govinfo_unreachable",
+                trigger_detail=type(exc).__name__)
+
+        if response.status_code == 429:
+            # Spending quota to confirm quota is self-defeating: no canary.
+            return await _recency_window_fallback(
+                ctx, validated_keywords, congress_value, bill_type_value,
+                limit_value, trigger="govinfo_rate_limited")
+
+        if response.status_code in (401, 403):
+            # With a key configured this is key rejection: operator-
+            # actionable, so no fallback (F31's sibling rule).
+            return format_error_response(
+                govinfo_search.key_rejected_error(response.status_code))
 
         if response.status_code != 200:
-            return format_error_response(CommonErrors.api_server_error(
-                "govinfo /search", response.status_code))
+            # The 500 family -- also what a malformed request returns, with
+            # an identical body (measured 2026-08-24). The canary
+            # disambiguates: one server-built constant query, known valid,
+            # zero caller input.
+            canary_ok = False
+            try:
+                canary = await govinfo_search_post(
+                    govinfo_search.canary_body())
+                canary_ok = canary.status_code == 200
+            except httpx.HTTPError:
+                canary_ok = False
+            if canary_ok:
+                # Caller's input implicated; no fallback.
+                return format_error_response(govinfo_search.query_error(
+                    response.status_code,
+                    page_token_supplied=page_token is not None))
+            # Outage confirmed.
+            return await _recency_window_fallback(
+                ctx, validated_keywords, congress_value, bill_type_value,
+                limit_value, trigger="govinfo_search_error",
+                trigger_detail=(
+                    f"HTTP {response.status_code}; canary also failed"))
 
         data = response.json()
         records = data.get("results") or []
@@ -238,6 +274,104 @@ async def search_bills(
         logger.error(f"Error in search_bills: {str(e)}")
         error_response = CommonErrors.api_server_error("search_bills")
         return format_error_response(error_response)
+
+
+def _window_hit(bill: dict) -> dict:
+    """A recency-window bill mapped onto the same identity fields corpus
+    hits carry, so a consumer reads one hit shape from either source."""
+    raw_number = bill.get("number")
+    try:
+        number = int(str(raw_number))
+    except (TypeError, ValueError):
+        number = raw_number
+    bill_type = str(bill.get("type") or "").lower() or None
+    latest = bill.get("latestAction")
+    return {
+        "bill": f"{str(bill.get('type') or '?').upper()} {raw_number}",
+        "congress": bill.get("congress"),
+        "bill_type": bill_type,
+        "bill_number": number,
+        "title": bill.get("title"),
+        "latest_action": latest.get("text") if isinstance(latest, dict) else None,
+        "update_date": bill.get("updateDate"),
+        "url": bill.get("url"),
+    }
+
+
+async def _recency_window_fallback(
+    ctx: Context,
+    keywords: str,
+    congress: Optional[int],
+    bill_type: Optional[str],
+    limit: int,
+    trigger: str,
+    trigger_detail: Optional[str] = None,
+) -> str:
+    """#66's honest window wearing its fallback labels (spec 6.4): the
+    250-row updateDate-desc page, title/policy-area filtered, with
+    search_source: recency_window_fallback, the trigger class, and the
+    window honesty metadata (bills_scanned / oldest updateDate /
+    window_truncated) -- so a fallback zero is structurally
+    distinguishable from a corpus zero, and both are distinguishable from
+    an error (the three-zeros rule)."""
+    scope = f" in Congress {congress}" if congress else ""
+    response = await fetch_bill_data(
+        ctx=ctx, congress=congress, bill_type=bill_type, format="json",
+        limit=250, sort="updateDate+desc")
+    if "error" in response:
+        # An errored fallback is an ERROR, never an empty result set.
+        return format_error_response(APIErrorResponse(
+            error_type=ErrorType.SERVER_ERROR,
+            message=(
+                f"GovInfo corpus search failed ({trigger}) and the "
+                "congress.gov recency-window fallback also failed."
+            ),
+            suggestions=["Retry later; both upstream sources errored"],
+            error_code=trigger,
+            details={"trigger_detail": trigger_detail,
+                     "fallback_error": str(response.get("error"))[:300]},
+        ))
+    bills = BillsDataProcessor.extract_bills_from_response(response)
+    filtered = await BillsDataProcessor.filter_by_keywords(
+        bills, keywords, limit)
+    dates = [str(b.get("updateDate")) for b in bills
+             if isinstance(b, dict) and b.get("updateDate")]
+    if filtered:
+        message = (
+            f"Title/policy-area filter over the {len(bills)} most recently "
+            f"updated bills{scope}. GovInfo full-text search was "
+            f"unavailable ({trigger}), so this is the recency window, not "
+            "the corpus -- older bills are invisible here; retry later for "
+            "corpus search."
+        )
+    else:
+        message = (
+            f"No match for '{keywords}' in the titles or policy areas of "
+            f"the {len(bills)} most recently updated bills{scope}. GovInfo "
+            f"full-text search was unavailable ({trigger}); this fallback "
+            "only filters recently updated bills by title/policy area -- "
+            "it is not a full-text or historical search, so this is NOT "
+            "evidence the bill does not exist. Retry later for corpus "
+            "search; for text inside a known bill use search_bill_text; "
+            "for subject browsing use get_bill_subjects."
+        )
+    payload = {
+        "search_source": "recency_window_fallback",
+        "fallback_trigger": trigger,
+        "results_count": len(filtered),
+        "results": [_window_hit(b) for b in filtered
+                    if isinstance(b, dict)],
+        "window": {
+            "bills_scanned": len(bills),
+            "oldest_update_date": min(dates) if dates else None,
+            "window_truncated": len(bills) >= 250,
+        },
+        "message": message,
+        "next_page_token": None,
+    }
+    if trigger_detail:
+        payload["fallback_detail"] = trigger_detail
+    return json.dumps(payload, indent=2)
 
 
 async def get_recent_bills(

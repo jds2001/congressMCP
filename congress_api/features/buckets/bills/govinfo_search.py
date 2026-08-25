@@ -441,3 +441,98 @@ def compute_next_token(
             "consumed; ending pagination early.", total, count)
         return None, total
     return encode_page_token(str(response_cursor), total, 0), total
+
+
+# ---------------------------------------------------------------------------
+# Failure flow (spec section 6.4)
+# ---------------------------------------------------------------------------
+
+# Trigger classes that put on the recency-window fallback. Keyless and
+# key-rejected are NOT here: those are operator-actionable configuration
+# states, and a fallback would bury the defect (F31).
+FALLBACK_TRIGGERS = (
+    "govinfo_search_error",     # 500 family, canary also failed
+    "govinfo_unreachable",      # transport error / timeout
+    "govinfo_rate_limited",     # 429 after the client's own backoff
+)
+
+
+def canary_body() -> "dict[str, Any]":
+    """The 500-disambiguation canary: one server-built constant query,
+    known valid, ZERO caller input (a bare fielded term is measured to
+    return 200 over the collection). A malformed request and an outage
+    both wear the same generic 500 upstream (measured); only a request
+    containing none of the caller's bytes can tell them apart."""
+    return {
+        "query": "collection:bills",
+        "pageSize": 1,
+        "offsetMark": "*",
+        "sorts": [dict(sort) for sort in SCORE_SORTS],
+    }
+
+
+def keyless_error() -> APIErrorResponse:
+    """F31: a keyless server answers api_key_missing -- never a fallback
+    (the operator must act) and never govinfo_key_rejected (there is no
+    key to have been rejected)."""
+    return APIErrorResponse(
+        error_type=ErrorType.AUTHENTICATION,
+        message=(
+            "No api.data.gov key is configured; the GovInfo corpus search "
+            "cannot run."
+        ),
+        suggestions=[
+            "Set CONGRESS_API_KEY in the server's environment "
+            "(api.congress.gov and api.govinfo.gov share one api.data.gov "
+            "key), or GOVINFO_API_KEY to use a separate GovInfo key",
+        ],
+        error_code="api_key_missing",
+        details=None,
+    )
+
+
+def key_rejected_error(status_code: int) -> APIErrorResponse:
+    """401/403 with a key configured. Not one of the five 6.4 rows:
+    operator-actionable, so no fallback -- it would bury a config defect."""
+    return APIErrorResponse(
+        error_type=ErrorType.AUTHENTICATION,
+        message="The configured api.data.gov key was rejected by GovInfo.",
+        suggestions=[
+            "api.congress.gov and api.govinfo.gov normally share one "
+            "api.data.gov key; set GOVINFO_API_KEY to override with a "
+            "separate GovInfo key",
+        ],
+        error_code="govinfo_key_rejected",
+        details={"status_code": status_code},
+    )
+
+
+def query_error(status_code: int, page_token_supplied: bool) -> APIErrorResponse:
+    """The canary-succeeded branch of the 500 row: the service accepted a
+    known-good query, so the caller's input is implicated -- no fallback."""
+    remediation = [
+        "Simplify keywords to plain words without operators or quotes "
+        "(words are ANDed; quoted phrases are unreliable against titles)",
+    ]
+    details: "dict[str, Any]" = {
+        "status_code": status_code,
+        "canary": "succeeded",
+    }
+    if page_token_supplied:
+        remediation.append(
+            "The supplied page_token is the other suspect -- it may be "
+            "malformed or expired; re-run the query without page_token and "
+            "walk next_page_token from the start"
+        )
+        details["page_token_supplied"] = True
+    return APIErrorResponse(
+        error_type=ErrorType.VALIDATION,
+        message=(
+            f"GovInfo /search rejected this request (HTTP {status_code}) "
+            "while accepting a known-good canary query, so the request "
+            "input is implicated rather than the service."
+        ),
+        suggestions=remediation,
+        error_code="govinfo_query_error",
+        details=details,
+    )
