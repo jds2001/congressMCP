@@ -132,10 +132,24 @@ async def bills(
     relevance. Parameters: keywords (required), congress, bill_type, limit,
     page_token, fromDateTime, toDateTime. It does NOT take
     offset/sort/format.
-    - Matching semantics: words are ANDed; do NOT quote bill names
-      (quoted phrases measured to miss title text); title:"..." /
-      shorttitle:"..." for exact titles; OR / NOT available; field
-      operators pass through.
+    - Matching semantics: words are ANDed -- every term must appear in
+      the SAME document, so each added word strictly shrinks the result
+      set and can never grow it. Start with the distinctive minimum: the
+      fewest words that name the thing, and add terms only to cut a set
+      that came back too large. Do NOT add words describing the topic,
+      category, or what the bill does -- that is the natural way to
+      phrase a search and the usual cause of a starved result. Worked
+      example: "Radiation Exposure Compensation Act amendments
+      downwinders" returns 1 bill; dropping the two description words
+      returns 26, including the enacted vehicle. A small count means the
+      terms rarely co-occur, NOT that few such bills exist -- re-query
+      narrower before concluding anything. Synonyms do NOT broaden here:
+      unlike search_bill_text, which ORs its queries array and rewards
+      adding alternate phrasings, an added synonym on this path
+      intersects and discards.
+    - Do NOT quote bill names (quoted phrases measured to miss title
+      text); title:"..." / shorttitle:"..." for exact titles; OR / NOT
+      available; field operators pass through.
     - keywords is required: blank or whitespace-only keywords are rejected
       (invalid_parameters), never sent.
     - Version discovery: each hit fronts the most authoritative matched

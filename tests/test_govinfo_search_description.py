@@ -29,12 +29,33 @@ def test_item_1_names_the_corpus():
 
 
 def test_item_2_matching_semantics():
-    # Pins the section-6.5 item-2 normative text (Addendum 3): the
-    # matching-semantics bullet is that text verbatim, in the
-    # docstring's voice.
+    # Pins the section-6.5 item-2 BLOCKQUOTE (Addendum 3 as bounced and
+    # re-issued with mechanical acceptance): the three deliberate
+    # properties are pinned by their own sentences, not paraphrases.
     doc = _doc()
-    assert "words are ANDed" in doc
-    assert "do NOT quote bill names" in doc
+    # AND narrowing, stated with its consequence.
+    assert ("words are ANDed -- every term must appear in the SAME "
+            "document, so each added word strictly shrinks the result "
+            "set and can never grow it") in doc
+    assert "Start with the distinctive minimum" in doc
+    # The worked example WITH MAGNITUDES -- the clause that changes
+    # behavior where the abstract statement measurably did not.
+    assert ('"Radiation Exposure Compensation Act amendments '
+            'downwinders" returns 1 bill') in doc
+    assert ("dropping the two description words returns 26, including "
+            "the enacted vehicle") in doc
+    # The starvation clause: a small count is not a finding.
+    assert "the usual cause of a starved result" in doc
+    assert ("A small count means the terms rarely co-occur, NOT that "
+            "few such bills exist -- re-query narrower before "
+            "concluding anything") in doc
+    # The cross-tool boundary line: search_bill_text ORs and rewards
+    # synonyms; this path intersects and discards.
+    assert ("unlike search_bill_text, which ORs its queries array and "
+            "rewards adding alternate phrasings, an added synonym on "
+            "this path intersects and discards") in doc
+    # Retained clauses, alongside (their own bullet, sentence-case).
+    assert "Do NOT quote bill names" in doc
     assert "quoted phrases measured to miss title text" in doc
     assert 'title:"..." / shorttitle:"..." for exact titles' in doc
     assert "OR / NOT available" in doc
