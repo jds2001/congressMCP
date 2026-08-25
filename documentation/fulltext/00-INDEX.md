@@ -31,7 +31,7 @@ Cross-references in the text use section numbers (§5, §6). The table above map
 
 ## Conventions — these bind
 
-**Amendments, not drift.** When implementation diverges from spec intentionally, record it inline as an amendment: what the spec said, what was measured, what changed, why the measurement beat the spec. Four exist — A1 (`amends` two-form), A2 (`timing` block), A3 (version resolution), A4 (structural discovery, since extended in scope), A5 (longhand USC verb gate), A6 (`timing` ships one field). **Number the next one A7.**
+**Amendments, not drift.** When implementation diverges from spec intentionally, record it inline as an amendment: what the spec said, what was measured, what changed, why the measurement beat the spec. Four exist — A1 (`amends` two-form), A2 (`timing` block), A3 (version resolution), A4 (structural discovery, since extended in scope), A5 (longhand USC verb gate), A6 (`timing` ships one field), A7 (`timing` env-gated behind `CONGRESSMCP_VERBOSE`, otherwise absent). **Number the next one A8.**
 
 **Verification steps are V1–V22**, defined in `10-fixtures-verification.md`. Refer to them by number. Several are credential-free and that is noted per step.
 

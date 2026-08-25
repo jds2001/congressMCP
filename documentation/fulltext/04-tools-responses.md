@@ -202,6 +202,8 @@ It also closes the iteration loop §7 opens: §7 instructs the model to pass sev
 
 ### `timing` — server-measured, on all three tools
 
+> **Amendment A7 (2026-08-25, maintainer): `timing` is emitted only when `CONGRESSMCP_VERBOSE` is set in the server environment.** What the spec said: `timing` ships on every response (A2, and A6's split restored in PR 2). What changed: it is now env-gated, absent by default. Why: a real consumer session weighed the telemetry blocks and the maintainer adopted the narrow version of its finding — `timing` is the only block that is **purely performance and never load-bearing for correctness** (six null fields on every warm hit), while `cache`, `version_resolution*`, and the disclosure notes are diagnostic-on-failure and stay always-on, because a failure that may not reproduce is worth their tokens on first occurrence. The consumer itself retracted its broader verbose-flag proposal on exactly this reasoning; §4's always-on telemetry decision otherwise **stands un-reopened**. A2's rationale (self-instrumenting tool) is preserved behind the env var, which is where an SRE lives anyway.
+
 > **Amendment A2 (intentional, PR 1).** Added because the calling model is often the only harness and cannot see call durations; it was inferring latency from gaps between `version_resolved_at` stamps, which also include its own token generation. Server-side timing makes the tool self-instrumenting.
 
 Semantics, to be documented in the tool descriptions:
