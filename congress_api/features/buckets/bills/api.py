@@ -8,6 +8,7 @@ to Congress.gov endpoints while maintaining enhancement capabilities.
 from typing import Optional
 import json
 import logging
+import time
 
 import httpx
 from mcp.server.mcpserver import Context
@@ -18,7 +19,9 @@ from .helpers import fetch_bill_data, build_bill_endpoint, validate_api_paramete
 from .processors import BillsDataProcessor
 from .formatters import BillsFormatter
 
-# The corpus search reuses the keyed, backoff-wrapped GovInfo transport.
+# The corpus search reuses the keyed, backoff-wrapped GovInfo transport,
+# and the trace mechanism binds this tool (govinfo-search-spec §2 addendum).
+from ...bill_text import trace
 from ...bill_text.client import govinfo_api_key, govinfo_search_post
 
 # Import existing reliability framework
@@ -158,6 +161,23 @@ async def search_bills(
         corpus-level query_diagnostics on a zero. Errors return the
         section-9 error envelope.
     """
+    started = time.perf_counter()
+    # §2 trace addendum: which 6.4 row fired, attributable from the trace
+    # alone. The key never appears here (the query carries no secret by
+    # construction; trace.write redacts known key values regardless).
+    flow = {"upstream_query": None, "outcome": None, "canary": None,
+            "fallback_trigger": None}
+    caller_args = {"keywords": keywords, "congress": congress,
+                   "bill_type": bill_type, "limit": limit,
+                   "page_token": page_token}
+
+    def _traced(result: str) -> str:
+        if trace.enabled():
+            trace.write(
+                "search_bills", caller_args, result,
+                round((time.perf_counter() - started) * 1000, 1), flow=flow)
+        return result
+
     try:
         validated_keywords = govinfo_search.validate_keywords(keywords)
         congress_value = govinfo_search.validate_congress(congress)
@@ -171,7 +191,7 @@ async def search_bills(
                 # An undecodable token cannot produce an offsetMark to send,
                 # so it is answered directly -- same code the canary path
                 # gives a malformed-but-decodable token (section 6.4).
-                return format_error_response(APIErrorResponse(
+                error = APIErrorResponse(
                     error_type=ErrorType.VALIDATION,
                     message=(
                         "page_token could not be decoded. Tokens are opaque "
@@ -184,11 +204,14 @@ async def search_bills(
                     ],
                     error_code="govinfo_query_error",
                     details={"parameter": "page_token"},
-                ))
+                )
+                flow["outcome"] = "page_token_undecodable"
+                return _traced(format_error_response(error))
             state = decoded
 
         query = govinfo_search.build_query(
             validated_keywords, congress_value, bill_type_value)
+        flow["upstream_query"] = query
         body = govinfo_search.build_search_body(
             query, limit_value, state["offsetMark"])
 
@@ -196,53 +219,70 @@ async def search_bills(
         # Keyless: F31 -- api_key_missing, the operator must act. Nothing
         # is sent and the fallback does NOT fire.
         if not govinfo_api_key():
-            return format_error_response(govinfo_search.keyless_error())
+            flow["outcome"] = "keyless"
+            return _traced(
+                format_error_response(govinfo_search.keyless_error()))
 
         try:
             response = await govinfo_search_post(body)
         except httpx.HTTPError as exc:
             # Network unreachable / timeout: no canary (it cannot answer a
             # transport failure); labeled fallback.
-            return await _recency_window_fallback(
+            flow["outcome"] = f"transport_error:{type(exc).__name__}"
+            flow["fallback_trigger"] = "govinfo_unreachable"
+            return _traced(await _recency_window_fallback(
                 ctx, validated_keywords, congress_value, bill_type_value,
                 limit_value, trigger="govinfo_unreachable",
-                trigger_detail=type(exc).__name__)
+                trigger_detail=type(exc).__name__))
 
         if response.status_code == 429:
             # Spending quota to confirm quota is self-defeating: no canary.
-            return await _recency_window_fallback(
+            flow["outcome"] = "http_429"
+            flow["fallback_trigger"] = "govinfo_rate_limited"
+            return _traced(await _recency_window_fallback(
                 ctx, validated_keywords, congress_value, bill_type_value,
-                limit_value, trigger="govinfo_rate_limited")
+                limit_value, trigger="govinfo_rate_limited"))
 
         if response.status_code in (401, 403):
             # With a key configured this is key rejection: operator-
             # actionable, so no fallback (F31's sibling rule).
-            return format_error_response(
-                govinfo_search.key_rejected_error(response.status_code))
+            flow["outcome"] = f"http_{response.status_code}"
+            return _traced(format_error_response(
+                govinfo_search.key_rejected_error(response.status_code)))
 
         if response.status_code != 200:
             # The 500 family -- also what a malformed request returns, with
             # an identical body (measured 2026-08-24). The canary
             # disambiguates: one server-built constant query, known valid,
             # zero caller input.
+            flow["outcome"] = f"http_{response.status_code}"
             canary_ok = False
             try:
                 canary = await govinfo_search_post(
                     govinfo_search.canary_body())
                 canary_ok = canary.status_code == 200
-            except httpx.HTTPError:
+                canary_result = f"http_{canary.status_code}"
+            except httpx.HTTPError as exc:
                 canary_ok = False
+                canary_result = f"transport_error:{type(exc).__name__}"
+            flow["canary"] = {
+                "fired": True,
+                "result": canary_result,
+                "branch": "query_error" if canary_ok else "fallback",
+            }
             if canary_ok:
                 # Caller's input implicated; no fallback.
-                return format_error_response(govinfo_search.query_error(
-                    response.status_code,
-                    page_token_supplied=page_token is not None))
+                return _traced(format_error_response(
+                    govinfo_search.query_error(
+                        response.status_code,
+                        page_token_supplied=page_token is not None)))
             # Outage confirmed.
-            return await _recency_window_fallback(
+            flow["fallback_trigger"] = "govinfo_search_error"
+            return _traced(await _recency_window_fallback(
                 ctx, validated_keywords, congress_value, bill_type_value,
                 limit_value, trigger="govinfo_search_error",
                 trigger_detail=(
-                    f"HTTP {response.status_code}; canary also failed"))
+                    f"HTTP {response.status_code}; canary also failed")))
 
         data = response.json()
         records = data.get("results") or []
@@ -258,7 +298,8 @@ async def search_bills(
             request_cursor=state["offsetMark"],
             response_cursor=data.get("offsetMark"),
         )
-        return json.dumps(govinfo_search.build_corpus_response(
+        flow["outcome"] = "http_200"
+        return _traced(json.dumps(govinfo_search.build_corpus_response(
             bills,
             total_version_matches=count,
             upstream_query=query,
@@ -266,7 +307,7 @@ async def search_bills(
             bill_type=bill_type_value,
             next_page_token=next_token,
             request_note=request_note,
-        ), indent=2)
+        ), indent=2))
 
     except CongressionalAPIError as e:
         return format_error_response(e.error_response)
