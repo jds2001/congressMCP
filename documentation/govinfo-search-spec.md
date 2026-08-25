@@ -18,6 +18,7 @@
 - **§9 error envelope, server-wide** (#68): new code paths emit `error.code`/`message`/`detail`/`remediation`; F22 URL-stripping applies to any GovInfo URL placed in `detail`; keyless is `api_key_missing`-shaped per the F31 contract, never `govinfo_key_rejected`.
 - **#65 coherence:** `results_count` equals the length of the typed list it counts, in every response shape including the fallback.
 - **Quota:** GovInfo's 36,000/hr bucket is **shared with bill-text content fetches** (M3-confirmed: one request per search call, one counter across `/search` and `/packages`). Deployment reality recorded 2026-08-24 (maintainer): **single-user stdio is the designed mode — the license prohibits SaaS hosting** — so per-call cost is negligible; what survives of this constraint is only that bulk search loops must not starve retrieval.
+- **Trace coverage** *(added 2026-08-24, maintainer — omitted from the original issuance)*: the trace mechanism (`CONGRESSMCP_TRACE_DIR`, shipped in PR 1) binds this tool. A traced run must show the assembled upstream query, the upstream outcome, the canary firing and its branch, and any fallback demotion with its trigger class — so §17-style adjudication can attribute behavior instead of inferring it. The key never reaches a trace record (F15/§11: scrub headers; the query string carries no secret by construction).
 - **No new dependencies.**
 
 ## §2a Upstream interface — per published documentation, 2026-08-24 (probe confirmation owed)
@@ -140,6 +141,8 @@ Normative for the implementation. Parameters are named by role — retained para
 
 Every fallback response is the #66 honest window wearing `search_source: "recency_window_fallback"`, its trigger class, and the window metadata — the §2 three-zeros rule discharged by structure, not prose.
 
+*Added 2026-08-24:* every row of this table is trace-visible under `CONGRESSMCP_TRACE_DIR` (§2 trace constraint) — in particular the canary call and its branch, and the moment of fallback demotion; a trace that shows only the final response cannot adjudicate which row fired.
+
 ### §6.5 Tool description — mandatory content
 
 The description is load-bearing (§2). The implementer words it; every item below must be present:
@@ -183,3 +186,5 @@ For the implementation session. §6 is the contract; this is the order. **Commit
 - Any change to the bill-text tools or the cache beyond reusing the client (except the two ride-along *captures*, which change nothing).
 - The #17 requirements call; anything in `fulltext/` — that surface is closed for this work order.
 - No new dependencies (standing).
+
+**Addendum, 2026-08-24 (maintainer, after issuance — work already in flight, so this is an addendum rather than a renumbering):** the trace mechanism (`CONGRESSMCP_TRACE_DIR`) must cover this tool — assembled query, upstream outcome, canary firing + branch, fallback demotion + trigger class, key scrubbed from all records (F15/§11). Lands naturally with step 4; test obligation: one traced call per §6.4 row shows the row that fired. §2's trace-coverage constraint and §6.4's trace note are the contract.
