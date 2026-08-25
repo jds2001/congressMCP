@@ -27,7 +27,19 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
+
+
+def _async_returning(raw):
+    """A real coroutine function stand-in. AsyncMock(return_value=...) is
+    not usable here: route_*_operation runs inspect.signature over the
+    patched handler (validate_operation_kwargs), and on Python 3.10 that
+    subscripts the mock's fake __code__ ('Mock' object is not
+    subscriptable). A genuine async def has a genuine signature on every
+    supported Python, and **kwargs keeps the routing guard a no-op."""
+    async def fake(*args, **kwargs):
+        return raw
+    return fake
 
 
 class FakeContext:
@@ -47,7 +59,7 @@ async def test_committee_intelligence_does_not_double_convert():
 
     raw = _fabricated_markdown(5, "# Committee Reports (5 found)")
     with patch("congress_api.features.committee_reports.get_latest_committee_reports",
-               new=AsyncMock(return_value=raw)):
+               new=_async_returning(raw)):
         resp = await mod.committee_intelligence(FakeContext(), operation="get_latest_committee_reports")
 
     assert resp.results_count == 5, "double-conversion bug: results_count always 0"
@@ -60,7 +72,7 @@ async def test_records_and_hearings_does_not_double_convert():
     from congress_api.features.buckets import records_and_hearings as mod
 
     raw = _fabricated_markdown(5, "Found 5 hearings")
-    with patch("congress_api.features.hearings.search_hearings", new=AsyncMock(return_value=raw)):
+    with patch("congress_api.features.hearings.search_hearings", new=_async_returning(raw)):
         resp = await mod.records_and_hearings(FakeContext(), operation="search_hearings", congress=119)
 
     assert resp.results_count == 5
@@ -73,7 +85,7 @@ async def test_research_and_professional_does_not_double_convert():
     from congress_api.features.buckets import research_and_professional as mod
 
     raw = _fabricated_markdown(5, "Found 5 reports")
-    with patch("congress_api.features.crs_reports.search_crs_reports", new=AsyncMock(return_value=raw)):
+    with patch("congress_api.features.crs_reports.search_crs_reports", new=_async_returning(raw)):
         resp = await mod.research_and_professional(FakeContext(), operation="search_crs_reports", keywords="x")
 
     assert resp.results_count == 5
@@ -86,7 +98,7 @@ async def test_voting_and_nominations_does_not_double_convert():
     from congress_api.features.buckets import voting_and_nominations as mod
 
     raw = _fabricated_markdown(5, "# Latest Nominations (5 found)")
-    with patch("congress_api.features.nominations.get_latest_nominations", new=AsyncMock(return_value=raw)):
+    with patch("congress_api.features.nominations.get_latest_nominations", new=_async_returning(raw)):
         resp = await mod.voting_and_nominations(FakeContext(), operation="get_latest_nominations")
 
     assert resp.results_count == 5
