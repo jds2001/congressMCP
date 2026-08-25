@@ -125,12 +125,49 @@ async def bills(
     • Relationships: get_bill_related_bills, get_bill_amendments
     • Legislative Process: get_bill_actions, get_bill_committees, get_bill_cosponsors
     • Date-Based: get_bills_by_date_range
+
+    SEARCH_BILLS (GovInfo full-text corpus search):
+    search_bills searches the full text of congressional bills -- every
+    version of every bill in the GovInfo BILLS collection -- ranked by
+    relevance. Parameters: keywords (required), congress, bill_type, limit,
+    page_token. It does NOT take offset/sort/format/date filters.
+    - Matching semantics: words are ANDed. Do NOT quote bill names --
+      quoted phrases are measured to miss bill title text. For an exact
+      title use title:"..." or shorttitle:"...". OR and NOT work, and
+      GovInfo field operators (congress:, billtype:, docnumber:,
+      billversion:, member:, committee:, actiondate:, ...) pass through
+      unchanged.
+    - keywords is required: blank or whitespace-only keywords are rejected
+      (invalid_parameters), never sent.
+    - Version discovery: each hit fronts the most authoritative matched
+      version (package_id, version, date_issued) and carries
+      matched_versions -- ONLY the versions whose text matched this query,
+      not the bill's complete version set. For a specific bill's COMPLETE
+      version set, call search_bills with fielded terms and no text words,
+      e.g. keywords="congress:119 billtype:s docnumber:1071" -- that
+      returns exactly the bill's versions. A pinned version that does not
+      exist still answers version_not_available (bill-text tools).
+    - Count semantics: total_version_matches counts matching VERSION
+      PACKAGES upstream and can exceed the number of distinct bills;
+      results_count counts the bills actually returned in this page.
+    - Pagination: pass next_page_token back verbatim as page_token; null
+      means the result set is exhausted. Pages can legally run short of
+      limit (version-heavy pages dedup below it). A bill whose version
+      records straddle a page boundary can rarely reappear on the next
+      page with the same identity -- dedup by congress/bill_type/
+      bill_number if walking pages.
+    - Fallback: when search_source is "recency_window_fallback", GovInfo
+      was unavailable (read fallback_trigger) and results are a
+      title/policy-area filter over the most recently updated bills, NOT
+      the corpus -- a zero there is not evidence a bill does not exist;
+      the window metadata says what was scanned.
     
     Args:
         operation: Specific operation to perform (see list above)
         bill_id: Flexible bill reference (e.g., 'HR 1234', 'H.R. 1234, 118th Congress', 'hr1234-118')
                  Automatically parsed to populate congress, bill_type, bill_number
-        keywords: Search keywords for content and metadata
+        keywords: search_bills: required full-text query (see
+                  SEARCH_BILLS above for matching semantics)
         congress: Congress number (118 for current, 119 for next)
         bill_type: hr, s, hjres, sjres, hconres, sconres, hres, sres
         bill_number: Specific bill number within type and congress
