@@ -174,7 +174,10 @@ Present on **hits, TOC nodes, and section-response children**. The highest-value
     //   bill_not_found       — congress.gov 404; definitive, GovInfo fallback NOT consulted
     //   congress_unavailable — 5xx / non-JSON 200 / network; recoverable → triggers GovInfo fallback
     //   govinfo_unavailable  — GovInfo fetch failed definitively (incl. redirect-chain exhaustion, F22)
-    //   version_not_available — bill exists, requested version does not (lists available)
+    //   version_not_available — bill exists, WELL-FORMED requested version does not (lists available)
+    //   version_not_found     — the version string is malformed, not a version code at all
+    //                           (pre-network guard at the shared load path; F38 ruling 2026-08-25 —
+    //                           deliberate split: malformed vs absent demand different remediations)
     //   internal_error       — a genuine server fault; NOT a masked upstream/decode failure (F21/F22)
     //   govinfo_key_rejected — a key WAS sent and GovInfo returned 401. A keyless server must NOT wear this code (F31): "existing key rejected" sends the operator hunting a stale key that does not exist. Missing key is its own code (api_key_missing-shaped) naming the variables to set
     "message": "S. 1071 exists but has no 'ih' version.",
