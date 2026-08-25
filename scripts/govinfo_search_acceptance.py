@@ -30,10 +30,11 @@ Probes (expected outcomes preregistered in spec section 3):
   A6  pagination                   -> pages enumerable, dup only same-id
   A7  fallback cell (poisoned proxy) -> labeled recency_window_fallback
   A8  119hr10115ih reachable by 'RECA'
-  A9  time-bounding (Q10): 2025-bounded RECA -> five bills without
-      hr10115ih; 2026-bounded -> exactly hr10115ih; single-day
-      2025-07-23 -> exactly hr4631ih (inclusive); one-sided bounds
-      behave; a bounded fallback names the updateDate semantics
+  A9  time-bounding (Q10): 2025-bounded RECA -> the 2025 set (5 version
+      packages / 4 bills; HR 1 matched twice) without hr10115ih;
+      2026-bounded -> exactly hr10115ih; single-day 2025-07-23 ->
+      exactly hr4631ih (inclusive); one-sided bounds behave; a bounded
+      fallback names the updateDate semantics
 """
 import asyncio
 import json
@@ -391,13 +392,22 @@ async def main() -> int:
         return sorted({(r["bill_type"], r["bill_number"])
                        for r in p.get("results", [])})
 
+    # Spec section 3 says "the five 2025-dated bills"; measured at the
+    # tool level that is FIVE VERSION PACKAGES deduping to FOUR bills
+    # (HR 1 matched with both enr and eas) -- the exact granularity
+    # total_version_matches exists to keep honest. Asserted as the
+    # tool-level truth of the raw M5 measurement; wording flagged to the
+    # spec session.
+    a9_expected_2025 = [("hr", 1), ("hr", 1362), ("hr", 4631), ("s", 243)]
     await probe(
-        "A9_2025", "2025-bounded RECA: five bills, without hr10115ih",
+        "A9_2025", "2025-bounded RECA: the 2025 bill set (5 version "
+                   "packages / 4 bills), without hr10115ih",
         {"keywords": "RECA", "congress": 119,
          "fromDateTime": "2025-01-01", "toDateTime": "2025-12-31"},
-        lambda p: (len(bills_of(p)) == 5
-                   and ("hr", 10115) not in bills_of(p),
-                   f"bills={bills_of(p)}"))
+        lambda p: (bills_of(p) == a9_expected_2025
+                   and p.get("total_version_matches") == 5,
+                   f"bills={bills_of(p)} "
+                   f"packages={p.get('total_version_matches')}"))
     await probe(
         "A9_2026", "2026-bounded RECA: exactly hr10115ih",
         {"keywords": "RECA", "congress": 119,
@@ -415,13 +425,14 @@ async def main() -> int:
          "fromDateTime": "2026-01-01"},
         lambda p: (ids(p) == ["BILLS-119hr10115ih"], f"ids={ids(p)}"))
     await probe(
-        "A9_to_only", "one-sided to 2025-12-31: five bills, without "
-                      "hr10115ih",
+        "A9_to_only", "one-sided to 2025-12-31: same set as the 2025 "
+                      "range, without hr10115ih",
         {"keywords": "RECA", "congress": 119,
          "toDateTime": "2025-12-31"},
-        lambda p: (len(bills_of(p)) == 5
-                   and ("hr", 10115) not in bills_of(p),
-                   f"bills={bills_of(p)}"))
+        lambda p: (bills_of(p) == a9_expected_2025
+                   and p.get("total_version_matches") == 5,
+                   f"bills={bills_of(p)} "
+                   f"packages={p.get('total_version_matches')}"))
 
     # A9 fallback leg: a bounded fallback names the updateDate
     # semantics. Same host-selective poison as A7; attribution via the
