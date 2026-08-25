@@ -130,7 +130,8 @@ async def bills(
     search_bills searches the full text of congressional bills -- every
     version of every bill in the GovInfo BILLS collection -- ranked by
     relevance. Parameters: keywords (required), congress, bill_type, limit,
-    page_token. It does NOT take offset/sort/format/date filters.
+    page_token, fromDateTime, toDateTime. It does NOT take
+    offset/sort/format.
     - Matching semantics: words are ANDed. Do NOT quote bill names --
       quoted phrases are measured to miss bill title text. For an exact
       title use title:"..." or shorttitle:"...". OR and NOT work, and
@@ -161,6 +162,12 @@ async def bills(
       title/policy-area filter over the most recently updated bills, NOT
       the corpus -- a zero there is not evidence a bill does not exist;
       the window metadata says what was scanned.
+    - Time-bounding: fromDateTime/toDateTime bound the VERSION'S
+      PUBLICATION DATE on the corpus path (inclusive both ends; either
+      side may be given alone; ISO date or datetime, datetimes truncated
+      to the date) -- NOT congress.gov's update date. In fallback mode
+      the same bounds filter updateDate over the window instead, and the
+      response says so.
     
     Args:
         operation: Specific operation to perform (see list above)
@@ -176,7 +183,9 @@ async def bills(
                     previous response's next_page_token, passed back verbatim
         sort: updateDate+desc (newest first) or updateDate+asc (not for
               search_bills, which is relevance-ranked)
-        fromDateTime/toDateTime: Date range (YYYY-MM-DDTHH:MM:SSZ)
+        fromDateTime/toDateTime: Date range (YYYY-MM-DDTHH:MM:SSZ;
+              search_bills: inclusive bounds on version publication date,
+              see SEARCH_BILLS above)
         
     Returns:
         Formatted results specific to requested operation

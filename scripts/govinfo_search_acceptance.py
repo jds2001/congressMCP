@@ -30,6 +30,10 @@ Probes (expected outcomes preregistered in spec section 3):
   A6  pagination                   -> pages enumerable, dup only same-id
   A7  fallback cell (poisoned proxy) -> labeled recency_window_fallback
   A8  119hr10115ih reachable by 'RECA'
+  A9  time-bounding (Q10): 2025-bounded RECA -> five bills without
+      hr10115ih; 2026-bounded -> exactly hr10115ih; single-day
+      2025-07-23 -> exactly hr4631ih (inclusive); one-sided bounds
+      behave; a bounded fallback names the updateDate semantics
 """
 import asyncio
 import json
@@ -381,6 +385,80 @@ async def main() -> int:
         {"keywords": "RECA", "congress": 119},
         lambda p: (any(str(i).startswith("BILLS-119hr10115")
                        for i in ids(p)), f"ids={ids(p)}"))
+
+    # A9 (Q10): the tool-level end-to-end of what M5 measured raw.
+    def bills_of(p):
+        return sorted({(r["bill_type"], r["bill_number"])
+                       for r in p.get("results", [])})
+
+    await probe(
+        "A9_2025", "2025-bounded RECA: five bills, without hr10115ih",
+        {"keywords": "RECA", "congress": 119,
+         "fromDateTime": "2025-01-01", "toDateTime": "2025-12-31"},
+        lambda p: (len(bills_of(p)) == 5
+                   and ("hr", 10115) not in bills_of(p),
+                   f"bills={bills_of(p)}"))
+    await probe(
+        "A9_2026", "2026-bounded RECA: exactly hr10115ih",
+        {"keywords": "RECA", "congress": 119,
+         "fromDateTime": "2026-01-01", "toDateTime": "2026-12-31"},
+        lambda p: (ids(p) == ["BILLS-119hr10115ih"], f"ids={ids(p)}"))
+    await probe(
+        "A9_single_day", "2025-07-23 single-day: exactly hr4631ih "
+                         "(inclusivity)",
+        {"keywords": "RECA", "congress": 119,
+         "fromDateTime": "2025-07-23", "toDateTime": "2025-07-23"},
+        lambda p: (ids(p) == ["BILLS-119hr4631ih"], f"ids={ids(p)}"))
+    await probe(
+        "A9_from_only", "one-sided from 2026-01-01: exactly hr10115ih",
+        {"keywords": "RECA", "congress": 119,
+         "fromDateTime": "2026-01-01"},
+        lambda p: (ids(p) == ["BILLS-119hr10115ih"], f"ids={ids(p)}"))
+    await probe(
+        "A9_to_only", "one-sided to 2025-12-31: five bills, without "
+                      "hr10115ih",
+        {"keywords": "RECA", "congress": 119,
+         "toDateTime": "2025-12-31"},
+        lambda p: (len(bills_of(p)) == 5
+                   and ("hr", 10115) not in bills_of(p),
+                   f"bills={bills_of(p)}"))
+
+    # A9 fallback leg: a bounded fallback names the updateDate
+    # semantics. Same host-selective poison as A7; attribution via the
+    # proxy's own deny log (A7 established the full premises this run).
+    proxy9 = HostSelectiveProxy(deny_hosts=["api.govinfo.gov"]).start()
+    saved9 = {name: os.environ.get(name)
+              for name in ("HTTPS_PROXY", "HTTP_PROXY")}
+    os.environ["HTTPS_PROXY"] = proxy9.url
+    os.environ["HTTP_PROXY"] = proxy9.url
+    try:
+        a9f = json.loads(await search_bills(
+            ctx, keywords="climate", congress=119,
+            fromDateTime="2026-01-01", toDateTime="2026-12-31"))
+    finally:
+        for name, value in saved9.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        proxy9.stop()
+    a9f_attributed = "api.govinfo.gov" in proxy9.denied
+    a9f_ok = (a9f_attributed
+              and a9f.get("search_source") == "recency_window_fallback"
+              and "updateDate" in a9f.get("message", "")
+              and a9f.get("date_bounds", {}).get("applied_to")
+              == "updateDate")
+    results["A9_fallback"] = {
+        "ok": a9f_ok,
+        "expect": "bounded fallback names updateDate semantics",
+        "note": f"attributed={a9f_attributed} "
+                f"source={a9f.get('search_source')} "
+                f"date_bounds={a9f.get('date_bounds')}"}
+    _record(directory, "A9_fallback", {
+        "proxy_denied_hosts": sorted(set(proxy9.denied)),
+        "response": a9f})
+    print(f"A9_fallback: {'PASS' if a9f_ok else 'FAIL'} "
+          f"({results['A9_fallback']['note']})")
 
     _record(directory, "summary", results)
     await app_ctx.client.aclose()

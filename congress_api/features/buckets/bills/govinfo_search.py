@@ -115,18 +115,82 @@ def clamp_limit(limit: Any) -> "tuple[int, Optional[str]]":
     return result.sanitized_value, result.error_message
 
 
+_DATE_SHAPE_RE = None
+_TIME_SHAPE_RE = None
+
+
+def validate_date_bound(name: str, value: Any) -> Optional[str]:
+    """Q10: ISO date or ISO datetime; a datetime is TRUNCATED to its date
+    before assembly (tolerated upstream, but the canonical date form keeps
+    the description honest). Returns the YYYY-MM-DD string, or None.
+
+    Shape is gated by explicit regexes BEFORE fromisoformat: newer
+    Pythons' fromisoformat also accepts compact forms (20250101), which
+    would make validation depend on the interpreter version -- the 3.10
+    floor and 3.14 must reject identically. fromisoformat then supplies
+    the range checking the regexes cannot (25:99, 2025-13-01).
+    """
+    if value is None:
+        return None
+    import datetime as _dt
+    import re
+    global _DATE_SHAPE_RE, _TIME_SHAPE_RE
+    if _DATE_SHAPE_RE is None:
+        _DATE_SHAPE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+        _TIME_SHAPE_RE = re.compile(
+            r"^\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})?$")
+    text = str(value).strip()
+    date_part, sep, time_part = text.partition("T")
+    parsed = None
+    if _DATE_SHAPE_RE.match(date_part) and \
+            (not sep or _TIME_SHAPE_RE.match(time_part)):
+        candidate = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            if sep:
+                parsed = _dt.datetime.fromisoformat(candidate).date()
+            else:
+                parsed = _dt.date.fromisoformat(date_part)
+        except ValueError:
+            parsed = None
+    if parsed is None:
+        _reject(CommonErrors.invalid_parameter(
+            name, value,
+            "Must be an ISO date (YYYY-MM-DD) or ISO datetime "
+            "(YYYY-MM-DDTHH:MM:SSZ); datetimes are truncated to the date."))
+    return parsed.isoformat()
+
+
+def validate_date_order(from_date: Optional[str],
+                        to_date: Optional[str]) -> None:
+    """Q10: ``from <= to`` enforced when both bounds are present (ISO date
+    strings compare lexicographically). Equal bounds are the measured
+    single-day form -- the range is inclusive both ends."""
+    if from_date is not None and to_date is not None and from_date > to_date:
+        _reject(CommonErrors.invalid_parameter(
+            "fromDateTime", f"{from_date} > {to_date}",
+            "fromDateTime must not be after toDateTime."))
+
+
 def build_query(keywords: str, congress: Optional[int],
-                bill_type: Optional[str]) -> str:
-    """``"{keywords} collection:bills[ congress:{n}][ billtype:{t}]"``.
+                bill_type: Optional[str],
+                from_date: Optional[str] = None,
+                to_date: Optional[str] = None) -> str:
+    """``"{keywords} collection:bills[ congress:{n}][ billtype:{t}]
+    [ publishdate:range(from,to)]"``.
 
     ``keywords`` must already be validated; scoping values must already be
-    sanitized (this function assembles, it does not judge).
+    sanitized (this function assembles, it does not judge). The time bound
+    maps to ``publishdate:range`` (Q10, M5-measured): inclusive both ends,
+    one-sided forms native -- ``range(from,)`` / ``range(,to)``.
     """
     parts = [keywords, "collection:bills"]
     if congress is not None:
         parts.append(f"congress:{congress}")
     if bill_type is not None:
         parts.append(f"billtype:{bill_type}")
+    if from_date is not None or to_date is not None:
+        parts.append(
+            f"publishdate:range({from_date or ''},{to_date or ''})")
     return " ".join(parts)
 
 

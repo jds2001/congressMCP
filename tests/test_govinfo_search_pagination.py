@@ -256,15 +256,15 @@ async def test_search_bills_blank_keywords_never_sends(monkeypatch):
 def test_search_bills_signature_dropped_window_params():
     from congress_api.features.buckets.bills import search_bills
     params = set(inspect.signature(search_bills).parameters)
+    # fromDateTime/toDateTime were removed with the window and RESTORED by
+    # Q10 (publishdate:range mapping); offset/sort/format stay gone.
     assert params == {"ctx", "keywords", "congress", "bill_type", "limit",
-                      "page_token"}
+                      "page_token", "fromDateTime", "toDateTime"}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("param,value", [
     ("offset", 10), ("sort", "updateDate+desc"), ("format", "json"),
-    ("fromDateTime", "2026-01-01T00:00:00Z"),
-    ("toDateTime", "2026-01-01T00:00:00Z"),
 ])
 async def test_router_rejects_removed_params_with_clear_error(param, value):
     from congress_api.features.bills_tool import route_bills_operation

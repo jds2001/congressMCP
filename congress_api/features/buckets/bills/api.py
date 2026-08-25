@@ -5,7 +5,7 @@ This module provides the public API for bills operations that map directly
 to Congress.gov endpoints while maintaining enhancement capabilities.
 """
 
-from typing import Optional
+from typing import Any, Optional
 import json
 import logging
 import time
@@ -133,7 +133,9 @@ async def search_bills(
     congress: Optional[int] = None,
     bill_type: Optional[str] = None,
     limit: int = 10,
-    page_token: Optional[str] = None
+    page_token: Optional[str] = None,
+    fromDateTime: Optional[str] = None,
+    toDateTime: Optional[str] = None
 ) -> str:
     """
     Full-text search over the GovInfo BILLS corpus -- every version of
@@ -153,6 +155,11 @@ async def search_bills(
         limit: Output cap in BILLS (clamps with advisory wording)
         page_token: Opaque cursor from a previous response's
             next_page_token, passed back verbatim
+        fromDateTime/toDateTime: Optional inclusive bounds on the VERSION
+            PUBLICATION DATE (Q10) -- ISO date or datetime, datetimes
+            truncated to the date; either side may be given alone. In
+            fallback mode the same bounds filter updateDate instead, and
+            the response says so.
 
     Returns:
         JSON envelope (str): search_source, results (bill hits fronting the
@@ -169,7 +176,8 @@ async def search_bills(
             "fallback_trigger": None}
     caller_args = {"keywords": keywords, "congress": congress,
                    "bill_type": bill_type, "limit": limit,
-                   "page_token": page_token}
+                   "page_token": page_token, "fromDateTime": fromDateTime,
+                   "toDateTime": toDateTime}
 
     def _traced(result: str) -> str:
         if trace.enabled():
@@ -183,6 +191,11 @@ async def search_bills(
         congress_value = govinfo_search.validate_congress(congress)
         bill_type_value = govinfo_search.validate_bill_type(bill_type)
         limit_value, request_note = govinfo_search.clamp_limit(limit)
+        from_date = govinfo_search.validate_date_bound(
+            "fromDateTime", fromDateTime)
+        to_date = govinfo_search.validate_date_bound(
+            "toDateTime", toDateTime)
+        govinfo_search.validate_date_order(from_date, to_date)
 
         state = govinfo_search.default_page_state()
         if page_token is not None:
@@ -210,7 +223,8 @@ async def search_bills(
             state = decoded
 
         query = govinfo_search.build_query(
-            validated_keywords, congress_value, bill_type_value)
+            validated_keywords, congress_value, bill_type_value,
+            from_date=from_date, to_date=to_date)
         flow["upstream_query"] = query
         body = govinfo_search.build_search_body(
             query, limit_value, state["offsetMark"])
@@ -233,7 +247,8 @@ async def search_bills(
             return _traced(await _recency_window_fallback(
                 ctx, validated_keywords, congress_value, bill_type_value,
                 limit_value, trigger="govinfo_unreachable",
-                trigger_detail=type(exc).__name__))
+                trigger_detail=type(exc).__name__,
+                from_date=from_date, to_date=to_date))
 
         if response.status_code == 429:
             # Spending quota to confirm quota is self-defeating: no canary.
@@ -241,7 +256,8 @@ async def search_bills(
             flow["fallback_trigger"] = "govinfo_rate_limited"
             return _traced(await _recency_window_fallback(
                 ctx, validated_keywords, congress_value, bill_type_value,
-                limit_value, trigger="govinfo_rate_limited"))
+                limit_value, trigger="govinfo_rate_limited",
+                from_date=from_date, to_date=to_date))
 
         if response.status_code in (401, 403):
             # With a key configured this is key rejection: operator-
@@ -282,7 +298,8 @@ async def search_bills(
                 ctx, validated_keywords, congress_value, bill_type_value,
                 limit_value, trigger="govinfo_search_error",
                 trigger_detail=(
-                    f"HTTP {response.status_code}; canary also failed")))
+                    f"HTTP {response.status_code}; canary also failed"),
+                from_date=from_date, to_date=to_date))
 
         data = response.json()
         records = data.get("results") or []
@@ -339,6 +356,22 @@ def _window_hit(bill: dict) -> dict:
     }
 
 
+def _update_date_in_bounds(update_date: Any,
+                           from_date: Optional[str],
+                           to_date: Optional[str]) -> bool:
+    """Inclusive bound check on a window row's updateDate (date part).
+    A row without an updateDate cannot establish membership under bounds
+    and is excluded."""
+    day = str(update_date or "")[:10]
+    if not day:
+        return False
+    if from_date is not None and day < from_date:
+        return False
+    if to_date is not None and day > to_date:
+        return False
+    return True
+
+
 async def _recency_window_fallback(
     ctx: Context,
     keywords: str,
@@ -347,6 +380,8 @@ async def _recency_window_fallback(
     limit: int,
     trigger: str,
     trigger_detail: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
 ) -> str:
     """#66's honest window wearing its fallback labels (spec 6.4): the
     250-row updateDate-desc page, title/policy-area filtered, with
@@ -373,8 +408,18 @@ async def _recency_window_fallback(
                      "fallback_error": str(response.get("error"))[:300]},
         ))
     bills = BillsDataProcessor.extract_bills_from_response(response)
+    bounded = from_date is not None or to_date is not None
+    if bounded:
+        # Q10 semantic shift, named below: the corpus path bounds the
+        # version's PUBLICATION date; the window only carries congress.gov
+        # updateDate, so the same bounds filter that instead.
+        candidate_rows = [b for b in bills if isinstance(b, dict)
+                          and _update_date_in_bounds(
+                              b.get("updateDate"), from_date, to_date)]
+    else:
+        candidate_rows = bills
     filtered = await BillsDataProcessor.filter_by_keywords(
-        bills, keywords, limit)
+        candidate_rows, keywords, limit)
     dates = [str(b.get("updateDate")) for b in bills
              if isinstance(b, dict) and b.get("updateDate")]
     if filtered:
@@ -396,6 +441,14 @@ async def _recency_window_fallback(
             "search; for text inside a known bill use search_bill_text; "
             "for subject browsing use get_bill_subjects."
         )
+    if bounded:
+        bounds_text = (
+            f" Date bounds [{from_date or '...'} .. {to_date or '...'}] "
+            "were applied to congress.gov updateDate (last update) over "
+            "the window rows -- NOT the version publication date the "
+            "corpus path bounds."
+        )
+        message += bounds_text
     payload = {
         "search_source": "recency_window_fallback",
         "fallback_trigger": trigger,
@@ -410,6 +463,9 @@ async def _recency_window_fallback(
         "message": message,
         "next_page_token": None,
     }
+    if bounded:
+        payload["date_bounds"] = {"from": from_date, "to": to_date,
+                                  "applied_to": "updateDate"}
     if trigger_detail:
         payload["fallback_detail"] = trigger_detail
     return json.dumps(payload, indent=2)

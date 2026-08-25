@@ -76,7 +76,21 @@ def test_item_7_blank_keywords_rejected():
     assert "blank or whitespace-only keywords are rejected" in doc
 
 
+def test_item_8_time_bounding():
+    doc = _doc()
+    assert "fromDateTime/toDateTime bound the VERSION'S PUBLICATION DATE" \
+        in doc
+    assert "inclusive both ends" in doc
+    assert "either side may be given alone" in doc
+    assert "datetimes truncated to the date" in doc
+    assert "NOT congress.gov's update date" in doc
+    assert "the same bounds filter updateDate over the window" in doc
+
+
 def test_removed_parameters_are_disclaimed():
     # The signature break is part of what shapes input: the description
-    # says search_bills does not take the old window parameters.
-    assert "does NOT take offset" in _doc()
+    # says search_bills does not take the removed window parameters --
+    # and, post-Q10, no longer disclaims the restored date bounds.
+    doc = _doc()
+    assert "does NOT take offset/sort/format" in doc
+    assert "date filters" not in doc
