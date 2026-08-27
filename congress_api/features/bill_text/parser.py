@@ -21,6 +21,18 @@ STRUCTURE_TYPES = {
     "subsection": "SS",
 }
 FALLBACK_CHAIN = ["subsection", "paragraph", "subparagraph", "clause"]
+# F35 (§5 ruling): the document's structural levels below section whose enum
+# renders in display text -- the full descending chain, not only the four
+# levels _subdivide can carve into child units, because the ruling covers the
+# TEXT of every structural unit ("(e)", "(2)", "(F)") wherever it renders:
+# hr10115's §12 sits under the byte cap, so its subsections are flowing text
+# of one unit, and the acceptance requires their designators there too.
+# A tuple, not a set: it is a RENDERING_SYMBOLS digest input, and a set's repr
+# order varies with string-hash randomization.
+SUBSTRUCTURE_ENUM_NAMES = (
+    "subsection", "paragraph", "subparagraph", "clause",
+    "subclause", "item", "subitem",
+)
 # Qualified-id codes for the subdivision chain (spec §5). `PARA`/`SUBP`/`CL` are
 # real document enums; a byte-bounded cut is NOT an enumeration of anything and is
 # addressed `CHUNK:{n}` instead, in a namespace that cannot be mistaken for a bill
@@ -700,18 +712,9 @@ class _Chunker:
         else:
             self.units.extend(byte_split_unit(unit))
 
-    # F35 (§5 designator-rendering ruling): an amendatory bill is its
-    # enumeration -- internal cross-references, redesignation clauses, and
-    # quoted amendments all address text BY DESIGNATOR -- yet the enum lived in
-    # the id, the TOC, and the child descriptors while being erased from the
-    # emitted text ("Authorization of appropriations" with no "(e)", making a
-    # 12(g)->12(e) cross-reference uncheckable from tool output). The display
-    # text of every STRUCTURAL unit below section level now begins with its
-    # enum exactly as the document writes it (delimiters preserved: "(e)",
-    # "(2)", "(F)"), followed by its header where present. Synthetic and chunk
-    # units are unchanged -- they have no enum to render. Note the RAW document
-    # enum is rendered, not normalize_enum's id form: the id carries identity,
-    # the text carries typography.
+    # F35 note: child units get their "(e) Header..." designator prefix from
+    # extract_segments (SUBSTRUCTURE_ENUM_NAMES), the same path that renders
+    # designators for subdivisions flowing inside an un-subdivided section.
     def _subdivide(self, elem: ET.Element, path: list[AncestorNode]) -> tuple[str | None, list[Unit]]:
         for child_name in FALLBACK_CHAIN:
             # Path 3 of the carve-out: a struck subsection/paragraph inside a live
@@ -738,11 +741,10 @@ class _Chunker:
                 enum = base_enum if sibling_counts[base_enum] == 1 else f"{base_enum}#{sibling_counts[base_enum]}"
                 node = AncestorNode(type=typ, enum=enum, header=direct_text(child, "header"))
                 child_id = "/".join([*(f"{item.type}:{item.enum}" for item in path), f"{node.type}:{node.enum}"])
-                segments = prefix_enum_segments(
-                    extract_segments(child, node.header),
-                    direct_text(child, "enum"),
-                )
-                child_unit = Unit(child_id, path, node.header, segments)
+                # F35: no prefix call here -- extract_segments renders the
+                # child's enum itself (the same path that covers subdivisions
+                # flowing inside an un-subdivided section's text).
+                child_unit = Unit(child_id, path, node.header, extract_segments(child, node.header))
                 if child_unit.byte_length > MAX_UNIT_BYTES:
                     units.extend(byte_split_unit(child_unit))
                 else:
@@ -845,13 +847,20 @@ def _chunk_unit(unit: Unit, idx: int, pieces: list[tuple[str, str]]) -> Unit:
 
 
 def prefix_enum_segments(segments: list[Segment], enum: str | None) -> list[Segment]:
-    """F35: prepend the document's own enum to a structural child unit's first
-    segment, so its display text begins "(e) Header..." / "(2) The Secretary
-    ...". Joining INTO the first segment (rather than emitting an enum-only
-    segment) keeps the enum on the same line as what it designates -- a
-    separate segment would render as its own block across the "\\n\\n" join.
-    The unit.header field and the id are untouched: this is display text only.
-    An empty unit stays empty -- there is nothing for an enum to designate."""
+    """F35 (§5 designator-rendering ruling): an amendatory bill is its
+    enumeration -- cross-references, redesignation clauses, and quoted
+    amendments address text BY DESIGNATOR, yet the enum lived in the id, the
+    TOC, and the child descriptors while being erased from the emitted text,
+    making a 12(g)->12(e) cross-reference uncheckable from tool output.
+
+    Prepend the document's own enum (RAW typography, not normalize_enum's id
+    form) to a structural sub-section-level element's first segment, so its
+    text begins "(e) Header..." / "(2) The Secretary...". Joining INTO the
+    first segment (rather than emitting an enum-only segment) keeps the enum
+    on the same line as what it designates -- a separate segment would render
+    as its own block across the "\\n\\n" join. Synthetic and chunk units are
+    unchanged (no enum to render); unit.header and the id are untouched. An
+    empty element stays empty -- there is nothing for an enum to designate."""
     if not enum or not segments:
         return segments
     first = segments[0]
@@ -986,7 +995,19 @@ def extract_segments(elem: ET.Element, unit_header: str | None, in_quote: bool =
         text = element_text(elem)
         if text:
             segments.append(Segment(context, text))
-    return coalesce_segments(segments)
+    segments = coalesce_segments(segments)
+    # F35: a structural unit below section level begins with its enum exactly
+    # as the document writes it, followed by its header where present --
+    # applied here, at the element whose segments these are, so the designator
+    # renders identically whether the unit becomes an addressable child
+    # (_subdivide) or flows inside its section's text (the hr10115 §12 shape).
+    # The element_text fallback above already carries the enum when it fired
+    # (it excludes nothing), so an exact-duplicate prefix is skipped.
+    if not in_quote and name in SUBSTRUCTURE_ENUM_NAMES:
+        enum = direct_text(elem, "enum")
+        if enum and not (segments and segments[0].text.startswith(enum)):
+            segments = prefix_enum_segments(segments, enum)
+    return segments
 
 
 def coalesce_segments(segments: list[Segment]) -> list[Segment]:

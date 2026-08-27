@@ -1095,6 +1095,35 @@ def test_f35_structural_child_display_text_begins_with_document_enum():
         by_id["S:12/SS:(e)"].display_text.encode("utf-8"))
 
 
+def test_f35_designators_render_in_flowing_text_of_unsubdivided_section():
+    # The hr10115 §12 shape: the section sits under the byte cap, so its
+    # subsections are FLOWING TEXT of one unit, not child units -- and the
+    # ruling covers them there too (the acceptance section). Nested paragraph
+    # designators render as well.
+    xml = (
+        b"<bill><legis-body><section><enum>12</enum>"
+        b"<header>Grants</header>"
+        b"<subsection><enum>(e)</enum><header>Authorization</header>"
+        b"<text>There are authorized sums.</text></subsection>"
+        b"<subsection><enum>(f)</enum><header>Definitions</header>"
+        b"<paragraph><enum>(1)</enum><header>Qualified individual</header>"
+        b"<text>The term means an individual.</text></paragraph>"
+        b"</subsection>"
+        b"<subsection><enum>(g)</enum><text>As defined in section 12(e) of this Act.</text></subsection>"
+        b"</section></legis-body></bill>"
+    )
+    parsed = parse_bill_xml(xml, "BILLS-119hr10115ih", "ih", None)
+    (unit,) = [u for u in parsed.units if u.section_id == "S:12"]
+    text = unit.display_text
+    assert "(e) Authorization" in text
+    assert "(f) Definitions" in text
+    assert "(1) Qualified individual" in text
+    assert "(g) As defined in section 12(e)" in text
+    # The acceptance property, in-unit: the (g)->(e) reference and the (e)
+    # designator are both present in one response.
+    assert text.index("(e) Authorization") < text.index("section 12(e)")
+
+
 def test_f35_synthetic_and_chunk_units_are_unchanged():
     # Synthetic units have no document enum to render; a byte chunk enumerates
     # nothing. Neither gains a prefix.

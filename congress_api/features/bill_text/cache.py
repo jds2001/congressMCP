@@ -92,8 +92,8 @@ SCHEMA_VERSION = 2
 # a series: print ``index.rendering_fingerprint()`` under that interpreter
 # (``uv python install 3.X`` / pyenv / a CI step) and add the entry.
 RENDERING_FINGERPRINTS: dict[str, str] = {
-    "3.12": "df5ca3e7783c345d2acc072ad584b4b48121ff7e363f4015aa1d617d449fa62d",
-    "3.14": "4bf89bebe0234f54540d12b9d4d129bc76e0ad215250d4914e4a3e36a59b9096",
+    "3.12": "5a58b545ab079f1970cf9ebcd3b6b9e7e565b88ce6569625f5f9cf24096630b0",
+    "3.14": "a95e941c93703a87ad8d14ecf80d7177b5d58ec38f1a92d4d4b445b2101790c6",
 }
 
 
@@ -115,7 +115,7 @@ def expected_rendering_fingerprint(series: str | None = None) -> str | None:
 # amends resolution), segmenter, schema, tokenizer -- and on nothing else.
 # Same rule: bump SCHEMA_VERSION AND re-pin, in one commit. (Trimmed fixtures
 # detect change; they prove nothing about correctness -- §13.)
-GOLDEN_BUILD_FINGERPRINT = "193551f56e6660e898951e1f782b84f050a69a08348d280119c29d8bc2d0bb0c"
+GOLDEN_BUILD_FINGERPRINT = "7fa1958addcebd798acefd4ab2929e4c4c8961633f3c63a6cbaa93cf89c7b8f8"
 
 # ``PRAGMA application_id`` stamped into every package database. ASCII "CMCP".
 # Adoption of an orphan file (present on disk, absent from the manifest) first
