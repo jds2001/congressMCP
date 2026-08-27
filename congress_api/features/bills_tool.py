@@ -145,7 +145,8 @@ async def bills(
       downwinders" returns 1 bill; dropping the two description words
       returns 26, including the enacted vehicle. A small count means the
       terms rarely co-occur, NOT that few such bills exist -- re-query
-      narrower before concluding anything. Synonyms do NOT broaden here:
+      broader (drop words) before concluding anything. Synonyms do NOT
+      broaden here:
       unlike search_bill_text, which ORs its queries array and rewards
       adding alternate phrasings, an added synonym on this path
       intersects and discards.

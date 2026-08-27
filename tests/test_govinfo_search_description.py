@@ -44,11 +44,16 @@ def test_item_2_matching_semantics():
             'downwinders" returns 1 bill') in doc
     assert ("dropping the two description words returns 26, including "
             "the enacted vehicle") in doc
-    # The starvation clause: a small count is not a finding.
+    # The starvation clause: a small count is not a finding. The remedy is
+    # BROADER, not narrower (maintainer correction, 2026-08-27): under AND
+    # semantics a starved result came from too many words, so the fix is
+    # dropping words -- the section-6.5 blockquote's "re-query narrower"
+    # wording is the bug, flagged back to the spec session.
     assert "the usual cause of a starved result" in doc
     assert ("A small count means the terms rarely co-occur, NOT that "
-            "few such bills exist -- re-query narrower before "
-            "concluding anything") in doc
+            "few such bills exist -- re-query broader (drop words) "
+            "before concluding anything") in doc
+    assert "re-query narrower" not in doc
     # The cross-tool boundary line: search_bill_text ORs and rewards
     # synonyms; this path intersects and discards.
     assert ("unlike search_bill_text, which ORs its queries array and "
