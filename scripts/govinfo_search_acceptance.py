@@ -35,6 +35,12 @@ Probes (expected outcomes preregistered in spec section 3):
       2026-bounded -> exactly hr10115ih; single-day 2025-07-23 ->
       exactly hr4631ih (inclusive); one-sided bounds behave; a bounded
       fallback names the updateDate semantics
+  A10 Q11 snippet tri-state (Addendum 4 item 1), live, in a TEMPORARY
+      snippet cache: absent when cache-empty; snippet_fetch warms and
+      enrolls; cache-only re-serve; one response exhibiting all three
+      states. Run standalone with:  --only A10
+      (A11 -- Q12 diagnostics -- has no probe yet: Q12 is unimplemented,
+      held for the maintainer's go-ahead.)
 """
 import asyncio
 import json
@@ -172,6 +178,156 @@ class HostSelectiveProxy:
                     pass
 
 
+
+async def run_a10(ctx, directory, results, probe):
+    """A10 (govinfo-search-spec Addendum 4 item 1): the Q11 snippet
+    tri-state, LIVE. Uses a TEMPORARY snippet cache so the probe starts
+    provably cache-empty and never pollutes the operator's real cache.
+
+    Cells (each recorded either way -- a cell that cannot be exhibited is a
+    FAIL to investigate, never silently skipped):
+      A10_absent      cache-empty: every hit carries NEITHER snippet field
+      A10_fetch       snippet_fetch=2: top-2 hits attempted (localized or
+                      not_localized) and their packages land ENROLLED
+      A10_cache_only  snippet_fetch=0 re-run: the warmed hits still carry
+                      snippets -- only the cache could have supplied them
+      A10_tristate    one response exhibiting ALL THREE states (localized +
+                      not_localized + absent); candidates tried in order,
+                      the exhibiting query recorded
+    """
+    import tempfile
+
+    from congress_api.features.bill_text import cache as bt_cache
+    from congress_api.features.bill_text import service as bt_service
+
+    tmp_cache = tempfile.mkdtemp(prefix="a10-snippet-cache-")
+    saved = os.environ.get(bt_cache.ENV_CACHE_DIR)
+    os.environ[bt_cache.ENV_CACHE_DIR] = tmp_cache
+    bt_service.reset_store()
+    try:
+        def states(payload):
+            """Per-hit tri-state census. A shape violation (a fourth state:
+            hollow localized, non-null not_localized snippet, or a dangling
+            single field) is counted so the cell FAILS with a note instead
+            of crashing the run -- the tri-state is the make-or-break."""
+            out = {"localized": 0, "not_localized": 0, "absent": 0,
+                   "VIOLATIONS": 0}
+            for hit in payload.get("results", []):
+                status = hit.get("snippet_status")
+                if status == "localized":
+                    out["localized"] += 1
+                    if not hit.get("snippet"):
+                        out["VIOLATIONS"] += 1
+                elif status == "not_localized":
+                    out["not_localized"] += 1
+                    if hit.get("snippet") is not None:
+                        out["VIOLATIONS"] += 1
+                elif status is None and "snippet" not in hit \
+                        and "snippet_status" not in hit:
+                    out["absent"] += 1
+                else:
+                    out["VIOLATIONS"] += 1
+            return out
+
+        base = {"keywords": "RECA", "congress": 119}
+
+        a = await probe(
+            "A10_absent", "cache-empty: every hit in the absent state",
+            dict(base),
+            lambda p: (p.get("results_count", 0) >= 3
+                       and states(p)["absent"] == p["results_count"]
+                       and states(p)["VIOLATIONS"] == 0,
+                       f"states={states(p)}"))
+
+        b = await probe(
+            "A10_fetch", "snippet_fetch=2: top-2 attempted and enrolled",
+            dict(base, snippet_fetch=2),
+            lambda p: (
+                all((h.get("snippet_status") in ("localized", "not_localized"))
+                    for h in p.get("results", [])[:2])
+                and all(
+                    bt_service.get_store().open(h["package_id"], None)
+                    is not None
+                    for h in p.get("results", [])[:2]),
+                f"states={states(p)} "
+                f"top2={[h.get('snippet_status') for h in p.get('results', [])[:2]]}"))
+
+        await probe(
+            "A10_cache_only",
+            "snippet_fetch=0 re-run: warmed hits still carry snippets "
+            "(cache is the only possible source)",
+            dict(base),
+            lambda p: (
+                sum(1 for h in p.get("results", [])
+                    if h.get("snippet_status")) >= 2,
+                f"states={states(p)}"))
+
+        # The single-response tri-state. The warmed cache persists across
+        # candidates; each runs with snippet_fetch=0 so no new packages
+        # enroll -- any localized/not_localized state comes from the cache,
+        # and un-warmed hits stay absent.
+        # not_localized needs a hit whose EVERY text term misses the
+        # fronted cached text -- per-term localization makes that rare by
+        # design (a good property that makes this cell the hard one). The
+        # reliable generator is FORM-MATTER vocabulary: hr4631's referral
+        # line ("referred to the Committee on the Judiciary") is indexed
+        # upstream (measured: fielded pin + "judiciary" -> count 1) while
+        # "judiciary" appears nowhere in its parsed body. The exhibit is
+        # CONSTRUCTED, not hoped for (ids measured live 2026-08-27):
+        #   hr5721ih  top "judiciary" hit, term in body -- pre-warmed below
+        #             -> localized
+        #   hr4631ih  warmed by the base cells, "judiciary" form-only
+        #             -> not_localized
+        #   hr1220ih  never warmed -> absent
+        # A parenthesized docnumber alternation pins exactly this page
+        # (grouping measured supported: "judiciary (docnumber:4631 OR
+        # docnumber:1220)" -> exactly those two bills).
+        await probe(
+            "A10_prewarm", "warm the judiciary body-match bill (hr5721ih)",
+            {"keywords": "judiciary docnumber:5721", "congress": 119,
+             "bill_type": "hr", "snippet_fetch": 1},
+            lambda p: (p.get("results_count", 0) == 1
+                       and states(p)["VIOLATIONS"] == 0,
+                       f"states={states(p)} ids={[h['package_id'] for h in p.get('results', [])]}"))
+        candidates = [
+            {"keywords": "judiciary (docnumber:4631 OR docnumber:5721 "
+                         "OR docnumber:1220)",
+             "congress": 119, "bill_type": "hr"},
+            {"keywords": "judiciary", "congress": 119},
+            dict(base),
+        ]
+        exhibited = None
+        attempts = []
+        from congress_api.features.buckets.bills.api import search_bills as _sb
+        for kwargs in candidates:
+            payload = json.loads(await _sb(ctx, **kwargs))
+            st = states(payload)
+            attempts.append({"request": kwargs, "states": st})
+            if (st["VIOLATIONS"] == 0 and st["localized"]
+                    and st["not_localized"] and st["absent"]):
+                exhibited = {"request": kwargs, "states": st,
+                             "response": payload}
+                break
+        ok = exhibited is not None
+        results["A10_tristate"] = {
+            "ok": ok,
+            "expect": "one response exhibits localized + not_localized + absent",
+            "note": (f"exhibited by {exhibited['request']} "
+                     f"{exhibited['states']}" if ok
+                     else f"NOT exhibited; attempts={attempts}")}
+        _record(directory, "A10_tristate",
+                {"attempts": attempts, "exhibited": exhibited})
+        print(f"A10_tristate: {'PASS' if ok else 'FAIL'} -- "
+              f"{results['A10_tristate']['note']}")
+    finally:
+        if saved is None:
+            os.environ.pop(bt_cache.ENV_CACHE_DIR, None)
+        else:
+            os.environ[bt_cache.ENV_CACHE_DIR] = saved
+        bt_service.reset_store()
+        print(f"A10 temp cache left for inspection: {tmp_cache}")
+
+
 def _out_dir() -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     directory = Path(__file__).resolve().parent.parent / "runs" / \
@@ -186,6 +342,11 @@ def _record(directory: Path, name: str, payload):
 
 
 async def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--only", default=None,
+                    help="run one probe group only (supported: A10)")
+    args = ap.parse_args()
     if not os.getenv("CONGRESS_API_KEY") and not os.getenv("GOVINFO_API_KEY"):
         print("Set CONGRESS_API_KEY (or GOVINFO_API_KEY) first.",
               file=sys.stderr)
@@ -227,6 +388,18 @@ async def main() -> int:
 
     def ids(payload):
         return [r.get("package_id") for r in payload.get("results", [])]
+
+    if args.only and args.only.upper() == "A10":
+        await run_a10(ctx, directory, results, probe)
+        _record(directory, "summary", results)
+        await app_ctx.client.aclose()
+        failed = [k for k, v in results.items() if not v["ok"]]
+        print(f"\nArtifacts: {directory}")
+        print("RESULT:", "ALL PASS" if not failed else f"FAILED: {failed}")
+        return 0 if not failed else 1
+    if args.only:
+        print(f"unknown --only group: {args.only}", file=sys.stderr)
+        return 2
 
     # A1
     a1 = await probe(
@@ -470,6 +643,9 @@ async def main() -> int:
         "response": a9f})
     print(f"A9_fallback: {'PASS' if a9f_ok else 'FAIL'} "
           f"({results['A9_fallback']['note']})")
+
+    # ---- A10 (Addendum 4 item 1): the Q11 snippet tri-state ----
+    await run_a10(ctx, directory, results, probe)
 
     _record(directory, "summary", results)
     await app_ctx.client.aclose()
