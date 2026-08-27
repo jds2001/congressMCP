@@ -210,6 +210,91 @@ AMENDS_STAT_RE = re.compile(
     + _HUG,
     re.IGNORECASE,
 )
+# A8 (F36): the parenthetical citation trailer on the amendatory subject --
+# "Section 5A of the Radiation Exposure Compensation Act (Public Law 101–426;
+# 42 U.S.C. 2210 note) is amended--". The per-cite hug above structurally
+# reaches only the RIGHTMOST citation of a semicolon-separated parenthetical
+# list (anything left of it has prose/digits between itself and the verb), and
+# a "note" designation breaks even that -- which is why P.L.-left-of-USC
+# extracted nothing while note-first extracted the P.L. (the F36 consumer
+# differential; mechanism check 2026-08-27 falsified the span-claiming
+# hypothesis recorded at the F36 entry). The A8 contract: when the verb hug
+# binds the parenthetical's closing paren, EVERY citation in the parenthetical
+# extracts, order-independent. The hug is established once, at the trailer
+# level; the inner forms below therefore carry no hug of their own -- they are
+# reachable only through a hugged trailer, so V13's gate is not weakened.
+# One nesting level inside the body admits citation designators ("(42 U.S.C.
+# 300(a) note)"); the body caps at 240 chars and never crosses a block
+# boundary, so an unbalanced ")" deep in a unit cannot manufacture a giant
+# pseudo-parenthetical that sweeps unrelated cites into hugging range.
+AMENDS_PAREN_TRAILER_RE = re.compile(
+    r"\((?P<body>(?:[^()\n]|\([^()\n]*\))*)\)" + _HUG,
+    re.IGNORECASE,
+)
+_PAREN_BODY_MAX_CHARS = 240
+# Inner forms: identical citation shapes to the hugged patterns above, minus
+# the hug (see the trailer comment). The P.L. form keeps the same-instance
+# "; N Stat. M" absorption so the standing Stat. rule is unchanged inside the
+# parenthetical: a Stat. cite accompanied by a P.L. in the same instance is
+# not separately emitted; alone, it emits as public_law.
+_PAREN_PL_RE = re.compile(
+    r"\b(?:Public\s+Law|Pub\.?\s*L\.?|P\.?\s*L\.?)\s*\.?\s*"
+    r"(\d+)[-‐-―](\d+)"
+    r"(?:[\s;(]*\d+\s+Stat\.\s*\d+\)?)?",
+    re.IGNORECASE,
+)
+# USC inside the trailer, with an optional statutory-note designation. A note
+# cite resolves to material SET OUT UNDER the section, not the section's own
+# text, so it emits as its own kind (`usc_note`) with the printed designation
+# ("note" / "note prec.") verbatim in the cite -- A8's discriminator rationale.
+_PAREN_USC_RE = re.compile(
+    r"\b(\d+)\s+U\.?\s?S\.?\s?C\.?\s+"
+    rf"(\d+[A-Za-z]*(?:[{_SECTION_DASH}]\d+[A-Za-z]*)?)"
+    r"(?:\([0-9A-Za-z]+\))*"
+    r"(?:\s+(note(?:\s+prec\.)?))?",
+    re.IGNORECASE,
+)
+_PAREN_STAT_RE = re.compile(r"\b(\d+)\s+Stat\.\s+(\d+)", re.IGNORECASE)
+# "Section 5 of Public Law 119-38 (139 Stat. 656) is amended": the P.L. sits
+# OUTSIDE the parenthetical and the Stat. inside it are one citation instance
+# -- the direct P.L. pass absorbs the parenthesized Stat., and the trailer
+# pass must not re-emit it as a standalone public_law. Detected by a P.L. form
+# ending immediately before the trailer's opening paren.
+_PL_BEFORE_PAREN_RE = re.compile(
+    r"(?:Public\s+Law|Pub\.?\s*L\.?|P\.?\s*L\.?)\s*\.?\s*\d+[-‐-―]\d+\s*$",
+    re.IGNORECASE,
+)
+
+
+def _paren_trailer_cites(body: str, pl_precedes: bool = False) -> "set[tuple[str, str]]":
+    """(kind, cite) pairs for every citation in one hugged parenthetical body.
+
+    ``pl_precedes`` marks a P.L. form directly before the opening paren; a
+    Stat. cite LEADING the body is then that P.L.'s same-instance companion
+    (the standing absorb rule, across the paren boundary) and is not emitted.
+    """
+    found: set[tuple[str, str]] = set()
+    pl_spans: list[tuple[int, int]] = []
+    for match in _PAREN_PL_RE.finditer(body):
+        found.add(("public_law", f"P.L. {match.group(1)}-{match.group(2)}"))
+        pl_spans.append((match.start(), match.end()))
+    for match in _PAREN_USC_RE.finditer(body):
+        section = _normalize_section_dash(match.group(2))
+        note = match.group(3)
+        if note:
+            designation = " ".join(note.lower().split())
+            found.add(("usc_note", f"{match.group(1)} U.S.C. {section} {designation}"))
+        else:
+            found.add(("usc", f"{match.group(1)} U.S.C. {section}"))
+    for match in _PAREN_STAT_RE.finditer(body):
+        if any(start <= match.start() < end for start, end in pl_spans):
+            continue
+        if pl_precedes and not body[:match.start()].strip():
+            continue
+        found.add(("public_law", f"{match.group(1)} Stat. {match.group(2)}"))
+    return found
+
+
 # A citation reached via an "as [added|amended] by ..." clause is an intervening
 # amender / provenance note, not the amendment target. Repro S:1106: the verb hugs
 # the LAST cite in a chain -- "(Public Law 109-234), as added by ... (P.L. 110-417),
@@ -287,8 +372,8 @@ class Unit:
         # Scan operative text only: a cite inside a quoted segment is part of the
         # language being *inserted*, not the target being amended (spec §6 --
         # exclude quoted material structurally, not by proximity). Returns objects
-        # {kind, cite}: kind is "usc" or "public_law", never a named Act. Sorted by
-        # (kind, cite), de-duplicated on the pair.
+        # {kind, cite}: kind is "usc", "usc_note", or "public_law" (A8), never a
+        # named Act. Sorted by (kind, cite), de-duplicated on the pair.
         #
         # A5 structural post-condition: `amends != [] ⟹ is_amendatory == true`.
         # Enforced here by construction so no citation form -- present or future --
@@ -329,6 +414,20 @@ class Unit:
             if _is_provenance_cite(operative_text, match.start()):
                 continue
             found.add(("public_law", f"{match.group(1)} Stat. {match.group(2)}"))
+        # A8 (F36): a verb-hugged parenthetical trailer extracts EVERY citation
+        # in its semicolon-separated list, order-independent -- the per-cite
+        # passes above reach only the rightmost cite of such a list. The hug and
+        # the provenance exclusion apply once, at the trailer; dedup on
+        # (kind, cite) absorbs the overlap with the direct passes.
+        for match in AMENDS_PAREN_TRAILER_RE.finditer(operative_text):
+            body = match.group("body")
+            if len(body) > _PAREN_BODY_MAX_CHARS:
+                continue
+            if _is_provenance_cite(operative_text, match.start()):
+                continue
+            pl_precedes = bool(_PL_BEFORE_PAREN_RE.search(
+                operative_text, 0, match.start()))
+            found.update(_paren_trailer_cites(body, pl_precedes))
         return [{"kind": kind, "cite": cite} for kind, cite in sorted(found)]
 
 
