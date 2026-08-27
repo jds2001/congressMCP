@@ -151,7 +151,23 @@ async def bills(
       intersects and discards.
     - Do NOT quote bill names (quoted phrases measured to miss title
       text); title:"..." / shorttitle:"..." for exact titles; OR / NOT
-      available; field operators pass through.
+      available.
+    - Fielded operators -- the full supported set, each measured live
+      (value form exactly as measured): congress:119; billtype:hr (hr s
+      hjres sjres hconres sconres hres sres); docnumber:4631;
+      billversion:enr (a version code); chamber:house / chamber:senate;
+      member:schumer (member last name); memberparty:r (single party
+      letter); memberstate:mo (two-letter state code);
+      committee:judiciary (a committee-name word);
+      actiondate:2025-01-03 (YYYY-MM-DD); publishdate:2025-07-23
+      (YYYY-MM-DD -- the fromDateTime/toDateTime parameters are the
+      range form); isprivate:false and isappropriation:false (boolean);
+      uscodecitation:"42 U.S.C. 2210"; statutecitation:"133 Stat. 1198";
+      plawcitation:"Public Law 101-426" (the three citation fields take
+      the quoted citation string). field:range(a,b) works on date
+      fields. A field name NOT on this list is a query error upstream
+      (measured HTTP 500, the malformed-request family) -- the tool
+      answers govinfo_query_error, so do not invent field names.
     - keywords is required: blank or whitespace-only keywords are rejected
       (invalid_parameters), never sent.
     - Version discovery: each hit fronts the most authoritative matched

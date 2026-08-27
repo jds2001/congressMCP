@@ -59,7 +59,9 @@ def test_item_2_matching_semantics():
     assert "quoted phrases measured to miss title text" in doc
     assert 'title:"..." / shorttitle:"..." for exact titles' in doc
     assert "OR / NOT available" in doc
-    assert "field operators pass through" in doc
+    # "field operators pass through" is deliberately GONE -- Addendum 4
+    # item 0 replaced the open-ended claim with the measured enumeration
+    # (test_item_9_field_enumeration_each_field_pinned).
 
 
 def test_item_3_version_discovery():
@@ -109,6 +111,51 @@ def test_item_8_time_bounding():
     assert "datetimes truncated to the date" in doc
     assert "NOT congress.gov's update date" in doc
     assert "the same bounds filter updateDate over the window" in doc
+
+
+def test_item_9_field_enumeration_each_field_pinned():
+    # Addendum 4 item 0 (section 6.5 item 9): the docstring enumerates every
+    # supported fielded operator WITH ITS MEASURED VALUE FORM. Each field is
+    # pinned individually with its example -- an enumeration whose members
+    # are not individually pinned is the assumption this list exists to
+    # reject. Probe artifacts: runs/govinfo-search/ (2026-08-27 field run).
+    doc = _doc()
+    for pinned in (
+        "congress:119",
+        "billtype:hr (hr s hjres sjres hconres sconres hres sres)",
+        "docnumber:4631",
+        "billversion:enr (a version code)",
+        "chamber:house / chamber:senate",
+        "member:schumer (member last name)",
+        "memberparty:r (single party letter)",
+        "memberstate:mo (two-letter state code)",
+        "committee:judiciary (a committee-name word)",
+        "actiondate:2025-01-03 (YYYY-MM-DD)",
+        "publishdate:2025-07-23",
+        "isprivate:false",
+        "isappropriation:false",
+        'uscodecitation:"42 U.S.C. 2210"',
+        'statutecitation:"133 Stat. 1198"',
+        'plawcitation:"Public Law 101-426"',
+        "the three citation fields take the quoted citation string",
+        "field:range(a,b) works on date fields",
+    ):
+        assert pinned in doc, pinned
+    # The old open-ended phrasing is GONE: "operator pass-through" without
+    # the operator list was the D17 root harm again.
+    assert "field operators pass through" not in doc
+
+
+def test_item_9_unrecognized_field_line_matches_the_probe():
+    # The preregistered silent-empty expectation was FALSIFIED: the probe
+    # measured HTTP 500 (the section-2b malformed-request family), so per
+    # the contract the "matches nothing" line is SKIPPED and the docstring
+    # states the measured error behavior instead. Artifact:
+    # runs/govinfo-search/ unrecognized_field_prereg.json.
+    doc = _doc()
+    assert "silently matches nothing" not in doc
+    assert "A field name NOT on this list is a query error upstream" in doc
+    assert "do not invent field names" in doc
 
 
 def test_removed_parameters_are_disclaimed():
