@@ -1379,6 +1379,8 @@ def test_search_aggregates_matching_segments_to_one_unit_hit():
 
 @pytest.mark.asyncio
 async def test_tool_wrappers_build_responses_without_network(monkeypatch):
+    # A7: timing is env-gated on the wire; assert the verbose shape here.
+    monkeypatch.setenv("CONGRESSMCP_VERBOSE", "1")
     # Exercises the tools.py envelope + response-model construction for all three
     # tools (the layer above the parser/index). Guards against duplicate-keyword
     # envelope regressions such as version_resolution_note being passed twice.
