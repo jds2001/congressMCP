@@ -204,6 +204,28 @@ async def bills(
       "quoted" governs: a snippet drawn from quoted material is language
       the bill is inserting or striking -- delimited in the snippet text
       -- NOT what current law says.
+    - Diagnostics: a starved result diagnoses itself. When the query has
+      2+ text terms and total_version_matches < 10, the response carries
+      diagnostics.term_ladder: the query re-run with text terms chopped
+      from the right, one per rung, down to a single term. Each rung
+      lists the terms kept and the upstream count, so the rung where the
+      count jumps names the term that starved the query -- and each rung
+      is itself the broader re-query to take. A final rung with terms []
+      is the constraints-only count: the size of the universe the
+      fielded/scope constraints allow, the ladder's denominator. Caveat:
+      right-chopping isolates trailing added words (the usual failure);
+      when the rare term sits FIRST, every rung stays small down to the
+      single-term rung -- which is the correct reading: the core term is
+      rare. A small count can be a CORRECT answer -- the ladder is
+      evidence for judging a result, not a verdict against it. On a
+      zero-total query carrying droppable constraints (fielded
+      operators, congress/bill_type scope, date bounds), the response
+      carries diagnostics.leave_one_out: the query re-run omitting one
+      constraint per probe -- the omission that restores hits names the
+      dead constraint (e.g. a version the bill never had). A probe that
+      errors reports count null with status "probe_failed", never 0.
+      Absence of diagnostics means it did not fire, never that it ran
+      and found nothing.
     - Fallback: when search_source is "recency_window_fallback", GovInfo
       was unavailable (read fallback_trigger) and results are a
       title/policy-area filter over the most recently updated bills, NOT

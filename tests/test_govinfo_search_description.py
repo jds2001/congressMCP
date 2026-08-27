@@ -181,6 +181,35 @@ def test_q11_snippets_bullet_with_quoted_governs():
             "the snippet text -- NOT what current law says") in doc
 
 
+def test_q12_diagnostics_bullet_order_caveat_and_small_can_be_correct():
+    # Addendum 4 continuation (Q12, ruled 2026-08-27): the ladder's two
+    # mandatory description lines are the order caveat and the
+    # small-can-be-correct line -- without them the ladder reads as a
+    # verdict against small results, which is exactly the misreading the
+    # ruling forbids.
+    doc = _doc()
+    assert "diagnostics.term_ladder" in doc
+    assert "2+ text terms and total_version_matches < 10" in doc
+    assert "chopped from the right" in doc
+    # The order caveat, pinned as its own sentences.
+    assert ("right-chopping isolates trailing added words (the usual "
+            "failure); when the rare term sits FIRST, every rung stays "
+            "small down to the single-term rung -- which is the correct "
+            "reading: the core term is rare") in doc
+    # The small-can-be-correct line.
+    assert ("A small count can be a CORRECT answer -- the ladder is "
+            "evidence for judging a result, not a verdict against it") in doc
+    # The terminal denominator rung and the constraints leg.
+    assert "the ladder's denominator" in doc
+    assert "diagnostics.leave_one_out" in doc
+    assert ("the omission that restores hits names the dead "
+            "constraint") in doc
+    # Probe failure honesty and absence semantics.
+    assert 'count null with status "probe_failed", never 0' in doc
+    assert ("Absence of diagnostics means it did not fire, never that "
+            "it ran and found nothing") in doc
+
+
 def test_removed_parameters_are_disclaimed():
     # The signature break is part of what shapes input: the description
     # says search_bills does not take the removed window parameters --
