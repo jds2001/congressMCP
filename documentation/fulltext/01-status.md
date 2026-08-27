@@ -1,6 +1,11 @@
 *(congressMCP bill-text spec — see `00-INDEX.md` for the file map, conventions, and settled decisions.)*
 
-## Status — 2026-08-24 (current) — PR 2 MERGED upstream; GovInfo `/search` work assigned
+## Status — 2026-08-26 (current) — F35 + F36 work order issued; govinfo-search Addendum 4 issued
+
+- **F35 + F36 work order issued** (branch `fix/f36-amends-extraction`; work order at the end of `14-defect-priority.md`). Both land together — one rendering-version bump, one corpus rebuild. F35 implements the §5 designator-rendering ruling; F36's extraction contract is ruled as **§6 Amendment A8**: parenthetical subject citations extract under the verb hug; statutory-note cites get a third `kind` (`usc_note`, printed form preserved); both kinds emit when both are present; order independence is contractual with the three consumer-differential sections as regression fixtures; V13's precision discipline binds (planted negatives, fresh n=20 hand-coding). Acceptance is set-based against the archived `f36_scan` input. The `extraction_status` schema question stays gated on the post-fix residual measurement.
+- **govinfo-search Addendum 4 issued** (`../govinfo-search-spec.md`) — the approved next batch: Q11 local snippets (tri-state contract binding, amendatory-trap disclosure inherited), Q12 zero-result term diagnostics (multi-term only, structured field), and the fulltext §4 **A7** `CONGRESSMCP_VERBOSE` timing gate. The reopened PR merged upstream as **#73** (`38c2930` on master), observed from git history — the search feature's in-flight status is closed.
+
+## Status — 2026-08-24 — PR 2 MERGED upstream; GovInfo `/search` work assigned
 
 **PR 2 merged upstream 2026-08-24** (maintainer-reported; squash `d7db421`, follow-ups `e4788ad` = #67, both on upstream master). Merge report: adversarial review gate **88/100** — the `os.link` claim protocol, the 7-point adoption gate, and the filename/path discipline held under attack; live on the maintainer's machine **cold 5.1 s → warm 74 ms** on the enrolled NDAA with `cache info` correct; the merged tree passes all 418 related tests alongside the master-side changes (#62 typed errors, #65 structured responses, #66 honest search) with zero conflicts.
 
