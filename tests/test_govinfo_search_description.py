@@ -163,6 +163,24 @@ def test_item_9_unrecognized_field_line_matches_the_probe():
     assert "do not invent field names" in doc
 
 
+def test_q11_snippets_bullet_with_quoted_governs():
+    # Addendum 4 item 1: the snippet tri-state is stated structurally, and
+    # the quoted-governs sentence is MANDATORY -- without it Q11 reintroduces
+    # the F4/A1 failure shape (text the bill is removing presented as what
+    # the bill says) on the tool consumers reach first.
+    doc = _doc()
+    assert 'snippet_status "localized" with a snippet object' in doc
+    assert '"not_localized" with snippet null' in doc
+    assert "BOTH fields absent means localization was not attempted" in doc
+    assert "snippet_fetch: N (default 0, hard cap 5)" in doc
+    assert "UNCACHED hits in rank order" in doc
+    assert ("carries the matched unit's section_id and match_contexts") in doc
+    # The quoted-governs sentence, pinned as a sentence.
+    assert ('"quoted" governs: a snippet drawn from quoted material is '
+            "language the bill is inserting or striking -- delimited in "
+            "the snippet text -- NOT what current law says") in doc
+
+
 def test_removed_parameters_are_disclaimed():
     # The signature break is part of what shapes input: the description
     # says search_bills does not take the removed window parameters --

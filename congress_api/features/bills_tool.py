@@ -107,6 +107,8 @@ async def bills(
     fromDateTime: Optional[str] = None,
     toDateTime: Optional[str] = None,
     days_back: Optional[int] = None,
+    # search_bills only: Q11 snippet warming budget
+    snippet_fetch: Optional[int] = None,
 ) -> str:
     """
     Comprehensive Bills Tool - All bill operations in one focused interface.
@@ -132,7 +134,7 @@ async def bills(
     search_bills searches the full text of congressional bills -- every
     version of every bill in the GovInfo BILLS collection -- ranked by
     relevance. Parameters: keywords (required), congress, bill_type, limit,
-    page_token, fromDateTime, toDateTime. It does NOT take
+    page_token, fromDateTime, toDateTime, snippet_fetch. It does NOT take
     offset/sort/format.
     - Matching semantics: words are ANDed -- every term must appear in
       the SAME document, so each added word strictly shrinks the result
@@ -188,6 +190,20 @@ async def bills(
       records straddle a page boundary can rarely reappear on the next
       page with the same identity -- dedup by congress/bill_type/
       bill_number if walking pages.
+    - Snippets: a hit whose fronted version package is already in the
+      local bill-text cache carries snippet_status and snippet, localized
+      from the cached text per-term (zero network). snippet_fetch: N
+      (default 0, hard cap 5) additionally downloads and enrolls the top-N
+      UNCACHED hits in rank order so they get snippets too. Three states:
+      snippet_status "localized" with a snippet object; "not_localized"
+      with snippet null (the cached text was searched and the terms did
+      not match locally -- the upstream match still stands, the local
+      stemming just missed it); BOTH fields absent means localization was
+      not attempted (uncached with no fetch budget). Every snippet object
+      carries the matched unit's section_id and match_contexts, and
+      "quoted" governs: a snippet drawn from quoted material is language
+      the bill is inserting or striking -- delimited in the snippet text
+      -- NOT what current law says.
     - Fallback: when search_source is "recency_window_fallback", GovInfo
       was unavailable (read fallback_trigger) and results are a
       title/policy-area filter over the most recently updated bills, NOT
@@ -230,6 +246,8 @@ async def bills(
         limit: Results limit (max 250 for API compliance)
         page_token: search_bills only -- opaque pagination cursor from a
                     previous response's next_page_token, passed back verbatim
+        snippet_fetch: search_bills only -- Q11 warming budget: download and
+                    enroll up to N uncached hits (cap 5) for local snippets
         sort: updateDate+desc (newest first) or updateDate+asc (not for
               search_bills, which is relevance-ranked)
         fromDateTime/toDateTime: Date range (YYYY-MM-DDTHH:MM:SSZ;
@@ -291,7 +309,8 @@ async def bills(
             'page_token': page_token,
             'fromDateTime': fromDateTime,
             'toDateTime': toDateTime,
-            'days_back': days_back
+            'days_back': days_back,
+            'snippet_fetch': snippet_fetch
         }.items():
             if param_value is not None:
                 operation_kwargs[param_name] = param_value

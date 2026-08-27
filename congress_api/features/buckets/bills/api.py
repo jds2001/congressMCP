@@ -14,7 +14,7 @@ import httpx
 from mcp.server.mcpserver import Context
 
 # Import our modular components
-from . import govinfo_search
+from . import govinfo_search, govinfo_snippets
 from .helpers import fetch_bill_data, build_bill_endpoint, validate_api_parameters
 from .processors import BillsDataProcessor
 from .formatters import BillsFormatter
@@ -135,7 +135,8 @@ async def search_bills(
     limit: int = 10,
     page_token: Optional[str] = None,
     fromDateTime: Optional[str] = None,
-    toDateTime: Optional[str] = None
+    toDateTime: Optional[str] = None,
+    snippet_fetch: Optional[int] = None
 ) -> str:
     """
     Full-text search over the GovInfo BILLS corpus -- every version of
@@ -155,6 +156,10 @@ async def search_bills(
         limit: Output cap in BILLS (clamps with advisory wording)
         page_token: Opaque cursor from a previous response's
             next_page_token, passed back verbatim
+        snippet_fetch: Q11 opt-in bounded warming -- download-and-enroll up
+            to N (hard cap 5, default 0) of the top uncached hits, in rank
+            order, so they get local snippets too; cached hits get snippets
+            for free regardless (zero network)
         fromDateTime/toDateTime: Optional inclusive bounds on the VERSION
             PUBLICATION DATE (Q10) -- ISO date or datetime, datetimes
             truncated to the date; either side may be given alone. In
@@ -177,7 +182,7 @@ async def search_bills(
     caller_args = {"keywords": keywords, "congress": congress,
                    "bill_type": bill_type, "limit": limit,
                    "page_token": page_token, "fromDateTime": fromDateTime,
-                   "toDateTime": toDateTime}
+                   "toDateTime": toDateTime, "snippet_fetch": snippet_fetch}
 
     def _traced(result: str) -> str:
         if trace.enabled():
@@ -191,6 +196,11 @@ async def search_bills(
         congress_value = govinfo_search.validate_congress(congress)
         bill_type_value = govinfo_search.validate_bill_type(bill_type)
         limit_value, request_note = govinfo_search.clamp_limit(limit)
+        snippet_fetch_value, snippet_note = (
+            govinfo_snippets.clamp_snippet_fetch(snippet_fetch))
+        if snippet_note:
+            request_note = ("; ".join([request_note, snippet_note])
+                            if request_note else snippet_note)
         from_date = govinfo_search.validate_date_bound(
             "fromDateTime", fromDateTime)
         to_date = govinfo_search.validate_date_bound(
@@ -306,6 +316,11 @@ async def search_bills(
         count = int(data.get("count") or 0)
         bills, consumed, page_exhausted = govinfo_search.paginate_records(
             records, state["skip"], limit_value)
+        # Q11: cache-only opportunistic snippets, plus the opt-in bounded
+        # fetch. Corpus path only -- window-fallback hits are not corpus
+        # matches and carry no package identity to localize against.
+        await govinfo_snippets.attach_snippets(
+            bills, validated_keywords, snippet_fetch_value)
         next_token, _ = govinfo_search.compute_next_token(
             count=count,
             prior_consumed=state["records_consumed"],
