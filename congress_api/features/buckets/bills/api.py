@@ -14,7 +14,7 @@ import httpx
 from mcp.server.mcpserver import Context
 
 # Import our modular components
-from . import govinfo_search, govinfo_snippets
+from . import govinfo_diagnostics, govinfo_search, govinfo_snippets
 from .helpers import fetch_bill_data, build_bill_endpoint, validate_api_parameters
 from .processors import BillsDataProcessor
 from .formatters import BillsFormatter
@@ -331,7 +331,7 @@ async def search_bills(
             response_cursor=data.get("offsetMark"),
         )
         flow["outcome"] = "http_200"
-        return _traced(json.dumps(govinfo_search.build_corpus_response(
+        payload = govinfo_search.build_corpus_response(
             bills,
             total_version_matches=count,
             upstream_query=query,
@@ -339,7 +339,21 @@ async def search_bills(
             bill_type=bill_type_value,
             next_page_token=next_token,
             request_note=request_note,
-        ), indent=2))
+        )
+        # Q12: starved-query diagnostics (term ladder + constraint
+        # leave-one-out), corpus path only -- the probes measure the
+        # corpus the primary result came from. A diagnostics failure
+        # must not alter the main response beyond this field.
+        try:
+            diagnostics = await govinfo_diagnostics.run_diagnostics(
+                validated_keywords, count, congress_value,
+                bill_type_value, from_date, to_date, govinfo_search_post)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("query diagnostics failed: %s", exc)
+            diagnostics = None
+        if diagnostics:
+            payload["diagnostics"] = diagnostics
+        return _traced(json.dumps(payload, indent=2))
 
     except CongressionalAPIError as e:
         return format_error_response(e.error_response)
