@@ -700,6 +700,18 @@ class _Chunker:
         else:
             self.units.extend(byte_split_unit(unit))
 
+    # F35 (§5 designator-rendering ruling): an amendatory bill is its
+    # enumeration -- internal cross-references, redesignation clauses, and
+    # quoted amendments all address text BY DESIGNATOR -- yet the enum lived in
+    # the id, the TOC, and the child descriptors while being erased from the
+    # emitted text ("Authorization of appropriations" with no "(e)", making a
+    # 12(g)->12(e) cross-reference uncheckable from tool output). The display
+    # text of every STRUCTURAL unit below section level now begins with its
+    # enum exactly as the document writes it (delimiters preserved: "(e)",
+    # "(2)", "(F)"), followed by its header where present. Synthetic and chunk
+    # units are unchanged -- they have no enum to render. Note the RAW document
+    # enum is rendered, not normalize_enum's id form: the id carries identity,
+    # the text carries typography.
     def _subdivide(self, elem: ET.Element, path: list[AncestorNode]) -> tuple[str | None, list[Unit]]:
         for child_name in FALLBACK_CHAIN:
             # Path 3 of the carve-out: a struck subsection/paragraph inside a live
@@ -726,7 +738,11 @@ class _Chunker:
                 enum = base_enum if sibling_counts[base_enum] == 1 else f"{base_enum}#{sibling_counts[base_enum]}"
                 node = AncestorNode(type=typ, enum=enum, header=direct_text(child, "header"))
                 child_id = "/".join([*(f"{item.type}:{item.enum}" for item in path), f"{node.type}:{node.enum}"])
-                child_unit = Unit(child_id, path, node.header, extract_segments(child, node.header))
+                segments = prefix_enum_segments(
+                    extract_segments(child, node.header),
+                    direct_text(child, "enum"),
+                )
+                child_unit = Unit(child_id, path, node.header, segments)
                 if child_unit.byte_length > MAX_UNIT_BYTES:
                     units.extend(byte_split_unit(child_unit))
                 else:
@@ -826,6 +842,20 @@ def _chunk_unit(unit: Unit, idx: int, pieces: list[tuple[str, str]]) -> Unit:
         header=unit.header,
         segments=segments,
     )
+
+
+def prefix_enum_segments(segments: list[Segment], enum: str | None) -> list[Segment]:
+    """F35: prepend the document's own enum to a structural child unit's first
+    segment, so its display text begins "(e) Header..." / "(2) The Secretary
+    ...". Joining INTO the first segment (rather than emitting an enum-only
+    segment) keeps the enum on the same line as what it designates -- a
+    separate segment would render as its own block across the "\\n\\n" join.
+    The unit.header field and the id are untouched: this is display text only.
+    An empty unit stays empty -- there is nothing for an enum to designate."""
+    if not enum or not segments:
+        return segments
+    first = segments[0]
+    return [Segment(first.context, f"{enum} {first.text}", inline=first.inline)] + segments[1:]
 
 
 def extract_own_segments(elem: ET.Element, header: str | None, subdivided_tag: str | None) -> list[Segment]:

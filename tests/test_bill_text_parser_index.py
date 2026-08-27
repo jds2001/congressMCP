@@ -1060,6 +1060,71 @@ def test_subdivision_emits_spec_prefix_codes_not_element_names():
     assert "S:2/PARA:(1)" in ids and "S:2/PARA:(2)" in ids
 
 
+def test_f35_structural_child_display_text_begins_with_document_enum():
+    # F35 (§5 ruling): an amendatory bill is its enumeration -- cross-references
+    # address text BY DESIGNATOR, and the parser erased the designator from the
+    # emitted text while its own ids depend on it. The display text of every
+    # structural unit below section level begins with its enum exactly as the
+    # document writes it, followed by its header where present.
+    filler = ("word " * 1000).strip()
+    xml = (
+        b"<bill><legis-body><section><enum>12</enum>"
+        b"<header>Authorization of appropriations</header>"
+        b"<text>Intro text.</text>"
+        + f"<subsection><enum>(e)</enum><header>Grants</header><text>{filler}</text></subsection>".encode()
+        + f"<subsection><enum>(f)</enum><header>Reports</header><text>{filler}</text></subsection>".encode()
+        + f"<subsection><enum>(g)</enum><text>Amounts under subsection (e) remain available. {filler}</text></subsection>".encode()
+        + b"</section></legis-body></bill>"
+    )
+    parsed = parse_bill_xml(xml, "BILLS-119hr10115ih", "ih", None)
+    by_id = {u.section_id: u for u in parsed.units}
+    # Enum first, then header, then body -- delimiters preserved.
+    assert by_id["S:12/SS:(e)"].display_text.startswith("(e) Grants")
+    assert by_id["S:12/SS:(f)"].display_text.startswith("(f) Reports")
+    # Headerless child: the enum still leads, joined into the first block.
+    assert by_id["S:12/SS:(g)"].display_text.startswith(
+        "(g) Amounts under subsection (e) remain available.")
+    # The acceptance property: the (g)->(e) cross-reference is checkable from
+    # the emitted text alone -- "(e)" appears as a designator in (e)'s own text.
+    assert "(e)" in by_id["S:12/SS:(e)"].display_text
+    # The id keeps the normalized identity; header field stays clean typography.
+    assert by_id["S:12/SS:(e)"].header == "Grants"
+    # byte_length counts the rendered enum (rendering change, hence the
+    # SCHEMA_VERSION bump).
+    assert by_id["S:12/SS:(e)"].byte_length == len(
+        by_id["S:12/SS:(e)"].display_text.encode("utf-8"))
+
+
+def test_f35_synthetic_and_chunk_units_are_unchanged():
+    # Synthetic units have no document enum to render; a byte chunk enumerates
+    # nothing. Neither gains a prefix.
+    xml = (
+        b"<resolution><preamble>"
+        b"<whereas><text>Whereas the finding stands;</text></whereas>"
+        b"</preamble><resolution-body>"
+        b"<section><enum>1</enum><text>Resolved text.</text></section>"
+        b"</resolution-body></resolution>"
+    )
+    parsed = parse_bill_xml(xml, "BILLS-119hres1ih", "ih", None)
+    pre = next(u for u in parsed.units if u.section_id.startswith("PRE:"))
+    assert pre.display_text.startswith("Whereas")
+    # A chunk of a subdivided child keeps the enum only where the child's own
+    # text begins (clipped into CHUNK:1), never copied onto every chunk.
+    filler = ("word " * 4000).strip()
+    xml2 = (
+        b"<bill><legis-body><section><enum>1</enum><header>Big</header>"
+        + f"<subsection><enum>(a)</enum><header>Huge</header><text>{filler}</text></subsection>".encode()
+        + f"<subsection><enum>(b)</enum><text>small</text></subsection>".encode()
+        + b"</section></legis-body></bill>"
+    )
+    parsed2 = parse_bill_xml(xml2, "BILLS-119s1071enr", "enr", None)
+    chunks = [u for u in parsed2.units if "/SS:(a)/CHUNK:" in u.section_id]
+    assert len(chunks) >= 2
+    assert chunks[0].display_text.startswith("(a) Huge")
+    for later in chunks[1:]:
+        assert not later.display_text.startswith("(a)")
+
+
 def test_no_addressable_unit_emitted_from_inside_quoted_block():
     # V14 regression fixture: a bill inserting a whole new <section> nests it in a
     # <quoted-block>. That inner section must NOT become a phantom addressable

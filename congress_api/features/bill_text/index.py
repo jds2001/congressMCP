@@ -450,6 +450,10 @@ RENDERING_SYMBOLS: tuple[tuple[str, str], ...] = (
     ("parser", "Segment"),
     ("parser", "Unit.display_text"),
     ("parser", "Unit.byte_length"),
+    # F35: the enum prefix is rendering-determining (it moves byte_length and
+    # chunk boundaries), and _subdivide decides which units receive it.
+    ("parser", "prefix_enum_segments"),
+    ("parser", "_Chunker._subdivide"),
     ("index", "FTS_TOKENIZER"),
     ("index", "_SCHEMA_SQL"),
     ("index", "BillTextIndex._build"),

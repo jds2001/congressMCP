@@ -66,7 +66,10 @@ logger = logging.getLogger(__name__)
 #     whitespace-only change).
 # There are no migrations: a file at an older version is discarded and rebuilt;
 # a file at a newer version is ignored and left in place (§10).
-SCHEMA_VERSION = 1
+# v2 (2026-08-27): F35 -- structural units below section level render their
+# document enum before header/text, moving byte_length and chunk boundaries
+# corpus-wide; landed together with F36's amends change (one rebuild).
+SCHEMA_VERSION = 2
 
 # Tripwire for the rule above (the F26 pattern). sha256 over the AST/values of
 # index.RENDERING_SYMBOLS -- segment joining, delimiter rendering, the header
@@ -89,8 +92,8 @@ SCHEMA_VERSION = 1
 # a series: print ``index.rendering_fingerprint()`` under that interpreter
 # (``uv python install 3.X`` / pyenv / a CI step) and add the entry.
 RENDERING_FINGERPRINTS: dict[str, str] = {
-    "3.12": "3520d328d56185699b4cfc55d9309fa589bff5ef5c3b50aa9b568491aa8893ac",
-    "3.14": "9f1e3a1d811af5728435b9a837f00ae0a1123daa06dbed90270a808ecb16a601",
+    "3.12": "df5ca3e7783c345d2acc072ad584b4b48121ff7e363f4015aa1d617d449fa62d",
+    "3.14": "4bf89bebe0234f54540d12b9d4d129bc76e0ad215250d4914e4a3e36a59b9096",
 }
 
 
@@ -112,7 +115,7 @@ def expected_rendering_fingerprint(series: str | None = None) -> str | None:
 # amends resolution), segmenter, schema, tokenizer -- and on nothing else.
 # Same rule: bump SCHEMA_VERSION AND re-pin, in one commit. (Trimmed fixtures
 # detect change; they prove nothing about correctness -- §13.)
-GOLDEN_BUILD_FINGERPRINT = "67087f4596bf2409147e50703b361883c64edf710c525f8a04cd8e5ea6982ae8"
+GOLDEN_BUILD_FINGERPRINT = "193551f56e6660e898951e1f782b84f050a69a08348d280119c29d8bc2d0bb0c"
 
 # ``PRAGMA application_id`` stamped into every package database. ASCII "CMCP".
 # Adoption of an orphan file (present on disk, absent from the manifest) first
