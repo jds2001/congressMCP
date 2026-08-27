@@ -274,7 +274,9 @@ async def search_bill_text(
 
     If "quoted" appears in match_contexts, the hit may include language the bill is removing,
     even when "operative" also appears; presence of "quoted" governs. Each amends entry is
-    {kind: "usc"|"public_law", cite}. amends is a convenience, never a complete list of what a
+    {kind: "usc"|"usc_note"|"public_law", cite}; "usc_note" targets note-codified law --
+    material set out UNDER the cited section, not the section's own text -- with the printed
+    note designation verbatim in the cite. amends is a convenience, never a complete list of what a
     section amends: it resolves no named Acts (including the IRC by bare section number), no
     chapter- or title-level amendments, and no non-U.S. Code targets. A NON-EMPTY amends can
     still be short -- a populated list is not evidence it is the whole list, and nothing
@@ -404,7 +406,9 @@ async def get_bill_section(
     is_amendatory is true, quoted language in text is matter the section INSERTS INTO or
     STRIKES FROM existing law -- an instruction to change another statute, not a freestanding
     requirement of this bill -- so present it as an amendment to the cited target, not as the
-    bill's own rule. Each amends entry is {kind: "usc"|"public_law", cite}. amends is citations
+    bill's own rule. Each amends entry is {kind: "usc"|"usc_note"|"public_law", cite};
+    "usc_note" targets note-codified law (material set out UNDER the cited section), the
+    printed note designation verbatim in the cite. amends is citations
     found, never a complete list: it resolves no named Acts, no chapter- or title-level
     amendments, and no non-U.S. Code targets, so a non-empty list can still be short. A
     heading-plus-children-descriptors response (subtree too large for max_bytes) reports the

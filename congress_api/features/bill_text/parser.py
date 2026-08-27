@@ -8,7 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from .client import BillTextError
-from .models import AncestorNode
+from .models import AMENDS_KINDS, AncestorNode
 
 
 MAX_UNIT_BYTES = 8_000
@@ -440,6 +440,16 @@ class Unit:
             pl_precedes = bool(_PL_BEFORE_PAREN_RE.search(
                 operative_text, 0, match.start()))
             found.update(_paren_trailer_cites(body, pl_precedes))
+        # F40 guard, at the single choke point every pass feeds: a kind
+        # outside the shared vocabulary (models.AMENDS_KINDS) fails HERE,
+        # loudly, at extraction -- never downstream, where the response
+        # models would reject it and discard the entire wire response.
+        unknown = {kind for kind, _ in found if kind not in AMENDS_KINDS}
+        if unknown:
+            raise ValueError(
+                f"amends kind(s) {sorted(unknown)} outside the shared "
+                f"vocabulary {AMENDS_KINDS}; widen models.AmendsKind and "
+                "this emission together (F40)")
         return [{"kind": kind, "cite": cite} for kind, cite in sorted(found)]
 
 
