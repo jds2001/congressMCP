@@ -2,6 +2,8 @@
 
 # 18. Prioritized defect list — from §17 and the GovInfo code audit
 
+**ACTIVE WORK ORDER: F35 + F36 — end of this file** (issued 2026-08-26, branch `fix/f36-amends-extraction`). The full cross-spec handoff, including the govinfo-search Addendum 4 batch, is consolidated in `../handoff-2026-08-26.md`.
+
 Everything the adversarial prompt suite and the accompanying source audit surfaced, ranked by **harm if left unfixed**, not by fix cost. Fix cost and status are annotated separately so the two are not confused.
 
 **Provenance is marked** because it changes how much weight each item carries: `[E2E]` = observed live in a §17 run; `[AUDIT]` = found by comparing the spec against GovInfo's published documentation; `[E2E-]` = observed but with a caveat on the evidence.
