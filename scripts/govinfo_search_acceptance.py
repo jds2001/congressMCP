@@ -39,8 +39,12 @@ Probes (expected outcomes preregistered in spec section 3):
       snippet cache: absent when cache-empty; snippet_fetch warms and
       enrolls; cache-only re-serve; one response exhibiting all three
       states. Run standalone with:  --only A10
-      (A11 -- Q12 diagnostics -- has no probe yet: Q12 is unimplemented,
-      held for the maintainer's go-ahead.)
+  A11 Q12 diagnostics (Addendum 4 continuation, redefined against the
+      ladder): a starved worked-example-family query whose term_ladder
+      shows the collapse rung; a one-term small-count query showing NO
+      diagnostics field; a constraint-starved query (billversion:enr on
+      a bill with no enrolled version) whose leave_one_out names the
+      dead constraint. Run standalone with:  --only A11
 """
 import asyncio
 import json
@@ -328,6 +332,97 @@ async def run_a10(ctx, directory, results, probe):
         print(f"A10 temp cache left for inspection: {tmp_cache}")
 
 
+async def run_a11(ctx, directory, results, probe):
+    """A11 (govinfo-search-spec Addendum 4 continuation, ruled
+    2026-08-27): the Q12 diagnostics, LIVE, per the redefined acceptance
+    -- it could not exist before Q12 shipped.
+
+    Cells:
+      A11_ladder           starved multi-term query of the worked-example
+                           family: term_ladder present, rung 0 carries
+                           the main total with no extra call, a rung
+                           where the count jumps (the collapse rung) is
+                           visible, the terminal terms-[] rung measures
+                           the constrained universe
+      A11_one_term         one-term small-count query: NO diagnostics
+                           field at all (absence means "did not fire")
+      A11_dead_constraint  pure fielded zero (billversion:enr on a bill
+                           with no enrolled version): leave_one_out fires
+                           WITHOUT a text ladder and the billversion:enr
+                           omission restores hits -- naming the culprit
+    """
+    def ladder_check(p):
+        total = p.get("total_version_matches")
+        ladder = (p.get("diagnostics") or {}).get("term_ladder")
+        if not ladder:
+            return False, f"no term_ladder (total={total})"
+        rung0 = ladder[0]
+        terminal = ladder[-1]
+        chops = ladder[1:-1]
+        counts = [r.get("count") for r in ladder]
+        shape_ok = (rung0.get("count") == total
+                    and len(rung0.get("terms", [])) >= 2
+                    and terminal.get("terms") == []
+                    and chops and len(chops[-1].get("terms", [])) == 1)
+        # The collapse rung: some broader rung measurably above rung 0
+        # (the worked example's 1 -> 26). Probe failures (count null)
+        # are tolerated per-rung but cannot count as the jump.
+        jump = any(isinstance(r.get("count"), int)
+                   and r["count"] > (total or 0)
+                   for r in chops)
+        # Terminal is the denominator: at least the single-term count.
+        last_chop = chops[-1].get("count") if chops else None
+        denom_ok = (not isinstance(terminal.get("count"), int)
+                    or not isinstance(last_chop, int)
+                    or terminal["count"] >= last_chop)
+        return (bool(shape_ok and jump and denom_ok),
+                f"total={total} counts={counts} "
+                f"terms_per_rung={[len(r.get('terms', [])) for r in ladder]}")
+
+    await probe(
+        "A11_ladder",
+        "worked-example starved query: ladder with visible collapse rung",
+        {"keywords": "Radiation Exposure Compensation Act amendments "
+                     "downwinders", "congress": 119},
+        ladder_check)
+
+    await probe(
+        "A11_one_term",
+        "one-term small-count query: no diagnostics field",
+        {"keywords": "judiciary docnumber:5721", "congress": 119,
+         "bill_type": "hr"},
+        lambda p: ("diagnostics" not in p
+                   and 0 < p.get("total_version_matches", 0) < 10,
+                   f"total={p.get('total_version_matches')} "
+                   f"has_diagnostics={'diagnostics' in p}"))
+
+    def dead_constraint_check(p):
+        total = p.get("total_version_matches")
+        diagnostics = p.get("diagnostics") or {}
+        loo = diagnostics.get("leave_one_out")
+        if total != 0:
+            return False, (f"premise gone: total={total}, expected 0 "
+                           "(does hr4631 have an enr version now?)")
+        if "term_ladder" in diagnostics:
+            return False, "text ladder fired on a pure fielded query"
+        if not loo:
+            return False, "no leave_one_out on a constrained zero"
+        by_omitted = {entry.get("omitted"): entry for entry in loo}
+        culprit = by_omitted.get("billversion:enr")
+        named = (culprit is not None
+                 and isinstance(culprit.get("count"), int)
+                 and culprit["count"] > 0)
+        return (named,
+                f"probes={[(e.get('omitted'), e.get('count')) for e in loo]}")
+
+    await probe(
+        "A11_dead_constraint",
+        "billversion:enr on an unenrolled bill: leave_one_out names it",
+        {"keywords": "docnumber:4631 billversion:enr", "congress": 119,
+         "bill_type": "hr"},
+        dead_constraint_check)
+
+
 def _out_dir() -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     directory = Path(__file__).resolve().parent.parent / "runs" / \
@@ -345,7 +440,7 @@ async def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--only", default=None,
-                    help="run one probe group only (supported: A10)")
+                    help="run one probe group only (supported: A10, A11)")
     args = ap.parse_args()
     if not os.getenv("CONGRESS_API_KEY") and not os.getenv("GOVINFO_API_KEY"):
         print("Set CONGRESS_API_KEY (or GOVINFO_API_KEY) first.",
@@ -389,8 +484,11 @@ async def main() -> int:
     def ids(payload):
         return [r.get("package_id") for r in payload.get("results", [])]
 
-    if args.only and args.only.upper() == "A10":
-        await run_a10(ctx, directory, results, probe)
+    if args.only and args.only.upper() in ("A10", "A11"):
+        if args.only.upper() == "A10":
+            await run_a10(ctx, directory, results, probe)
+        else:
+            await run_a11(ctx, directory, results, probe)
         _record(directory, "summary", results)
         await app_ctx.client.aclose()
         failed = [k for k, v in results.items() if not v["ok"]]
@@ -646,6 +744,9 @@ async def main() -> int:
 
     # ---- A10 (Addendum 4 item 1): the Q11 snippet tri-state ----
     await run_a10(ctx, directory, results, probe)
+
+    # ---- A11 (Addendum 4 continuation): the Q12 diagnostics ----
+    await run_a11(ctx, directory, results, probe)
 
     _record(directory, "summary", results)
     await app_ctx.client.aclose()
