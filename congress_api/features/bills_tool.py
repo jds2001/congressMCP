@@ -171,6 +171,17 @@ async def bills(
       fields. A field name NOT on this list is a query error upstream
       (measured HTTP 500, the malformed-request family) -- the tool
       answers govinfo_query_error, so do not invent field names.
+      NOTE TRAP: uscodecitation matches the CODE SECTION, not notes
+      published under it. A note-codified Act (RECA at 42 U.S.C. 2210
+      note) does NOT match uscodecitation:"42 U.S.C. 2210" -- that
+      returns the section's own bills. Measured in Congress 119: that
+      query returns 7 bills, ZERO of them RECA (all Price-Anderson /
+      nuclear-energy bills amending the section proper), while
+      plawcitation:"Public Law 101-426" returns the 7-bill RECA answer
+      set. The two citation fields silently DISAGREE about the same
+      statute with no signal to try the other: for a note-codified Act
+      use plawcitation:"Public Law NNN-NNN"; when both forms exist,
+      prefer plawcitation.
     - keywords is required: blank or whitespace-only keywords are rejected
       (invalid_parameters), never sent.
     - Version discovery: each hit fronts the most authoritative matched

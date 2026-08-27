@@ -210,6 +210,31 @@ def test_q12_diagnostics_bullet_order_caveat_and_small_can_be_correct():
             "it ran and found nothing") in doc
 
 
+def test_addendum5_uscodecitation_note_trap():
+    # Addendum 5 (2026-08-27): GovInfo's citation index keys the code
+    # section, not notes published under it, so the two citation fields
+    # silently DISAGREE about a note-codified statute. Consumer-found;
+    # figures re-probed and confirmed before pinning (standing rule) --
+    # artifacts runs/govinfo-search/2026-08-27T173136Z/ (Congress-119
+    # scope reconstructs the consumer's numbers exactly: 7 bills each
+    # side, zero RECA on the uscodecitation side; unscoped confirms the
+    # trap corpus-wide, 201 vs 63 version matches).
+    doc = _doc()
+    assert ("uscodecitation matches the CODE SECTION, not notes "
+            "published under it") in doc
+    assert "note-codified" in doc  # the ruled acceptance-grep phrase
+    assert ('does NOT match uscodecitation:"42 U.S.C. 2210"') in doc
+    # The measured contrast, with figures (the section-6.5 lesson: the
+    # abstract warning alone does not change behavior).
+    assert "7 bills, ZERO of them RECA" in doc
+    assert ('plawcitation:"Public Law 101-426" returns the 7-bill RECA '
+            "answer set") in doc
+    # The remedy and the preference rule.
+    assert ("for a note-codified Act use "
+            'plawcitation:"Public Law NNN-NNN"') in doc
+    assert "prefer plawcitation" in doc
+
+
 def test_removed_parameters_are_disclaimed():
     # The signature break is part of what shapes input: the description
     # says search_bills does not take the removed window parameters --
