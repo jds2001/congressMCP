@@ -1,6 +1,16 @@
 *(congressMCP bill-text spec — see `00-INDEX.md` for the file map, conventions, and settled decisions.)*
 
-## Status — 2026-08-26 (current) — F35 + F36 work order issued; govinfo-search Addendum 4 issued (item 0 = docstring fields fix, first)
+## Status — 2026-08-27 (current) — all three packages delivered and adjudicated; F35, F36 CLOSED
+
+All three handoff packages came back and were adjudicated against artifacts by this session (closures at the F35/F36 entries in `14-defect-priority.md`; search-side adjudication at the end of `../govinfo-search-spec.md`):
+
+- **F36 and F35 CLOSED** (`fix/f36-amends-extraction`, `6e8f4e2..1170151`; artifacts `runs/f36/2026-08-27T010454Z/`): 830→0 / 70→0 set-based, planted negatives hold, coherence zero violations, precision 20/20, §12 designators render. Mechanism hypothesis falsified (rightmost-cite hug, not span claiming); HR 4631 §2 reclassified A6-interposed; **`extraction_status` RULED declined** on the measured residual (663 = 4 provenance / 67 A6 / 592 unhugged cross-reference); et seq. head-of-range emission ratified at A8; golden-input blind spot closed (§10 rule added); **A6 flip condition first half met** (`13-deferred-options.md`).
+- **Addendum 4 item 0 DISCHARGED pending merge** (`fix/search-bills-docstring-fields`): 18/18 fields documented and probe-verified, differential negatives bind; unrecognized-field preregistration **falsified** (HTTP 500, not silent-empty) and the replacement docstring line ratified; the §6.5 blockquote's "re-query narrower" defect (implementer-found) corrected in spec and docstring both.
+- **Items 1 & 3 REPORTED IMPLEMENTED** (`feature/addendum4-items`); close on the maintainer-run A10/A11. **Q12 awaits the maintainer's go-ahead.**
+
+**Maintainer's queue:** merge order (docstring branch × addendum4 branch touch the same docstring block — mechanical conflict, both edits survive); A10/A11 live runs; Q12 go/no-go; whether to commission the A6 bounded-hug second half; the uncommissioned V19-adjacent ride-along measurement.
+
+## Status — 2026-08-26 — F35 + F36 work order issued; govinfo-search Addendum 4 issued (item 0 = docstring fields fix, first)
 
 **The consolidated implementation handoff — all packages, checklist form — is `../handoff-2026-08-26.md`.** Priority: (1) the `search_bills` docstring fields enumeration (Addendum 4 item 0 — the merged docstring names 5 of 18 fielded operators, measured string-level on master; the §6.5 semantics blockquote itself DID merge, phrase-verified), (2) F35+F36, (3) Addendum 4 items 1–3.
 

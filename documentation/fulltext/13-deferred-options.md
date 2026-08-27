@@ -73,6 +73,8 @@ Note also the interaction with the named-Act rule: §6 resolves only the parenth
 
 **What would flip this to A6.** The idiom appearing at material rate in a third document beyond NDAA and hr1, **and** a bounded implementation showing 0 added false positives on a ≥30 hand sample that specifically includes interposed-clause citations. Both, not either.
 
+**First half MET, measured 2026-08-27** (F36 adjudication artifacts, `runs/f36/2026-08-27T010454Z/`): the idiom is corpus-wide, not an NDAA quirk — **84 A6-only units across ≥15 documents** in the post-fix scan, 67 units in the residual measurement's `a6_interposed` class, and HR 4631 §2 (a live, consumer-relevant RECA bill) is the clean third-document instance, its no-extract behavior pinned in `tests/test_f36_regression_fixtures.py`. The second half stands exactly as written — a bounded implementation demonstrating 0 added false positives on a ≥30 hand sample including interposed-clause citations, the precision trap above unchanged. Whether to commission that is the maintainer's scheduling call; the deferral's status is unchanged (deferred, not rejected — now with the evidence half satisfied).
+
 ### `cited_authorities` — unresolved citation tokens
 
 An alternative to resolving IRC cites: emit them **unresolved** in a separate field, e.g. `cited_authorities: ["45F(a)(1)"]` — literal captured section tokens with no U.S. Code claim attached. This sidesteps §6 entirely (nothing is resolved to a named Act) and fixes the bare-anchor coverage problem, since the operative clause carries the section number even when it drops the Act name.

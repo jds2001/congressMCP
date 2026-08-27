@@ -395,7 +395,9 @@ Sorted by `(kind, cite)`, de-duplicated on the pair. Empty list when nothing mat
 >
 > **Invariant, restated:** `amends` resolves **U.S. Code, U.S. Code statutory-note, and Public Law citations — never named Acts.** Still one sentence a consumer can reason about. The coherence invariant (`amends != []` ⟹ `is_amendatory == true`) is preserved by the hug requirement.
 >
-> Acceptance is set-based at the work order — `14-defect-priority.md`, "Work order — F35 + F36 (2026-08-26)". The `extraction_status` design question stays gated on the post-fix residual measurement, decided with the fix, not before.
+> **Ratified at adjudication, 2026-08-27:** the trailer pass also captures an `et seq.` subject cite — `(12 U.S.C. 411 et seq.) is amended` — emitting the **head-of-range** as plain `usc`. The range qualifier is not carried: the same accepted narrowing as the division-of-P.L. prefix, and the head of range is the resolvable anchor (hand-coded positive in the post-fix sample). The `N U.S.C. note prec. M` order variant — designation *before* the number — remains a known, unmeasured recall gap, recorded at the F36 entry with no contract claim either way.
+>
+> Acceptance is set-based at the work order — `14-defect-priority.md`, "Work order — F35 + F36 (2026-08-26)"; **discharged 2026-08-27, closure at the F36 entry.** The `extraction_status` design question was gated on the post-fix residual measurement and is **RULED 2026-08-27: declined** — measurement and rationale at the F36 entry.
 
 
 ---
